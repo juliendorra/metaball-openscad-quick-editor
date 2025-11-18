@@ -25,12 +25,12 @@
       margin: 0;
       padding: 0;
       height: 100%;
+      width: 100%;
       overflow: hidden;
       font-family: sans-serif;
       background-color: #f2f2f2;
     }
 
-    /* Layout container uses explicit column widths so that the sidebar is always visible. */
     #container {
       display: flex;
       width: 100vw;
@@ -38,16 +38,47 @@
       overflow: hidden;
     }
 
-    #canvas {
-      width: calc(100% - 320px);
-      height: 100%;
-      background-color: white;
-      border-right: 1px solid #ccc;
-      cursor: crosshair;
-      touch-action: none;
-      display: block;
+    /* Left: 3-view area, folded bottom view up on the right */
+    #viewContainer {
+      flex: 1;
+      display: grid;
+      grid-template-columns: 2fr 1fr;
+      /* left big, right slim */
+      grid-template-rows: 2fr 1fr;
+      /* top big, bottom small */
+      grid-template-areas:
+        "xy yz"
+        "xz yz";
+      /* yz spans both rows on right */
+      gap: 0;
+      background: #ddd;
     }
 
+    canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+      background: #fff;
+    }
+
+    #xyCanvas {
+      grid-area: xy;
+      border-right: 1px solid #ccc;
+      border-bottom: 1px solid #ccc;
+    }
+
+    #xzCanvas {
+      grid-area: xz;
+      border-right: 1px solid #ccc;
+      border-top: 1px solid #ccc;
+    }
+
+    #yzCanvas {
+      grid-area: yz;
+      border-left: 1px solid #ccc;
+    }
+
+    /* Right: sidebar */
     #sidebar {
       width: 320px;
       height: 100%;
@@ -117,12 +148,24 @@
 
 <body>
   <div id="container">
-    <canvas id="canvas"></canvas>
+    <div id="viewContainer">
+      <canvas id="xyCanvas"></canvas>
+      <canvas id="xzCanvas"></canvas>
+      <canvas id="yzCanvas"></canvas>
+    </div>
+
     <div id="sidebar">
       <h1>Metaball Editor</h1>
       <div class="hint">
-        <p>Click inside the canvas to select or move a metaball. Drag it to change its position. Use the mouse wheel while a ball is selected to adjust its radius. The coloured overlay shows the metaball isosurface at the chosen threshold.</p>
+        <p>
+          XY (top) view: top-left, shaded isosurface.<br>
+          XZ (side) view: bottom-left.<br>
+          YZ (\"bottom folded up\") view: right, full height.<br>
+          Click to select a metaball, drag to move it. Use the mouse wheel
+          over a selected ball to adjust its radius.
+        </p>
       </div>
+
       <h2>Metaballs</h2>
       <div id="ballList"></div>
       <button id="addBtn">Add Ball</button>
@@ -130,29 +173,37 @@
       <div class="hint">
         You can also press the <code>Delete</code> key to remove the selected ball.
       </div>
+
       <h2>Parameters</h2>
       <div class="control">
-        <label>Threshold: <input type="number" id="threshold" min="0" step="0.1" value="1"></label>
+        <label>Threshold:
+          <input type="number" id="threshold" min="0" step="0.1" value="1">
+        </label>
       </div>
       <div class="control">
-        <label>Resolution: <input type="number" id="res" min="10" max="400" step="10" value="120"></label>
+        <label>Resolution:
+          <input type="number" id="res" min="10" max="400" step="10" value="120">
+        </label>
       </div>
+
       <h2>Generated OpenSCAD</h2>
       <textarea id="scadcode" readonly></textarea>
       <div class="hint">
-        Copy this code into OpenSCAD (with the BOSL2 library installed) to render your metaballs. The
-        <code>spec</code> array contains pairs of transformations and metaball functions
-        (<code>move([x,y,z])</code> and <code>mb_sphere(radius)</code>). The <code>bounding_box</code>
-        defines the evaluation region of the isosurface. <code>voxel_size</code> controls the resolution
-        of the triangulation and <code>isovalue</code> defines the blending threshold.
+        Copy this code into OpenSCAD (with the BOSL2 library installed) to render your metaballs.
       </div>
     </div>
   </div>
 
   <script>
     (function () {
-      const canvas = document.getElementById('canvas');
-      const ctx = canvas.getContext('2d');
+      const xyCanvas = document.getElementById('xyCanvas');
+      const xzCanvas = document.getElementById('xzCanvas');
+      const yzCanvas = document.getElementById('yzCanvas');
+
+      const xyCtx = xyCanvas.getContext('2d');
+      const xzCtx = xzCanvas.getContext('2d');
+      const yzCtx = yzCanvas.getContext('2d');
+
       const ballList = document.getElementById('ballList');
       const addBtn = document.getElementById('addBtn');
       const removeBtn = document.getElementById('removeBtn');
@@ -160,45 +211,79 @@
       const resInput = document.getElementById('res');
       const scadcodeTextarea = document.getElementById('scadcode');
 
+      // World-space metaballs: {x, y, z, r}
       let balls = [];
       let selectedIndex = -1;
 
-      function resize() {
-        canvas.width = canvas.clientWidth;
-        canvas.height = canvas.clientHeight;
-        draw();
-      }
-      window.addEventListener('resize', resize);
+      // Drag state
+      let dragging = false;
+      let dragView = null; // 'xy' | 'xz' | 'yz'
+      let dragOffset = { dx: 0, dy: 0, dz: 0 };
 
-      function addBall(x, y, r) {
-        const radius = r !== undefined ? r : Math.min(canvas.width, canvas.height) * 0.1;
-        const cx = x !== undefined ? x : canvas.width / 2;
-        const cy = y !== undefined ? y : canvas.height / 2;
-        balls.push({ x: cx, y: cy, r: radius });
-        selectedIndex = balls.length - 1;
-        updateBallList();
-        draw();
-        updateScad();
+      // --- Coordinate transforms ---
+
+      function resizeCanvases() {
+        [xyCanvas, xzCanvas, yzCanvas].forEach(c => {
+          c.width = c.clientWidth;
+          c.height = c.clientHeight;
+        });
+        drawAll();
       }
 
-      function removeSelected() {
-        if (selectedIndex >= 0) {
-          balls.splice(selectedIndex, 1);
-          selectedIndex = -1;
-          updateBallList();
-          draw();
-          updateScad();
-        }
+      window.addEventListener('resize', resizeCanvases);
+
+      function worldToScreenXY(x, y) {
+        return {
+          px: x + xyCanvas.width / 2,
+          py: xyCanvas.height / 2 - y
+        };
       }
+
+      function screenToWorldXY(px, py) {
+        return {
+          x: px - xyCanvas.width / 2,
+          y: xyCanvas.height / 2 - py
+        };
+      }
+
+      function worldToScreenXZ(x, z) {
+        return {
+          px: x + xzCanvas.width / 2,
+          py: xzCanvas.height / 2 - z
+        };
+      }
+
+      function screenToWorldXZ(px, py) {
+        return {
+          x: px - xzCanvas.width / 2,
+          z: xzCanvas.height / 2 - py
+        };
+      }
+
+      // Right view, YZ view: : Z horizontal, Y vertical
+      function worldToScreenYZ(y, z) {
+        return {
+          px: z + yzCanvas.width / 2,       // Z → horizontal
+          py: yzCanvas.height / 2 - y       // Y → vertical
+        };
+      }
+
+      function screenToWorldYZ(px, py) {
+        return {
+          y: yzCanvas.height / 2 - py,      // vertical → Y
+          z: px - yzCanvas.width / 2        // horizontal → Z
+        };
+      }
+
+      // --- UI: list of balls ---
 
       function updateBallList() {
         ballList.innerHTML = '';
         balls.forEach((b, i) => {
           const entry = document.createElement('div');
           entry.className = 'ball-entry';
-          if (i === selectedIndex) {
-            entry.style.background = '#e0f0ff';
-          }
+          if (i === selectedIndex) entry.style.background = '#e0f0ff';
+
           const label = document.createElement('span');
           label.textContent = `Ball ${i + 1}`;
           entry.appendChild(label);
@@ -213,7 +298,7 @@
             const val = parseFloat(e.target.value);
             if (!isNaN(val) && val > 0) {
               b.r = val;
-              draw();
+              drawAll();
               updateScad();
             }
           };
@@ -222,94 +307,225 @@
           entry.onclick = () => {
             selectedIndex = i;
             updateBallList();
-            draw();
+            drawAll();
           };
 
           ballList.appendChild(entry);
         });
+
         removeBtn.disabled = selectedIndex < 0;
       }
 
-      // --- OpenSCAD export ---------------------------------------------------
+      function addBall(x, y, z, r) {
+        const defaultR = Math.min(xyCanvas.width, xyCanvas.height) * 0.1 || 50;
+        const R = r !== undefined ? r : defaultR;
+
+        const wx = (x !== undefined) ? x : -R;
+        const wy = (y !== undefined) ? y : 0;
+        const wz = (z !== undefined) ? z : 0;
+
+        balls.push({ x: wx, y: wy, z: wz, r: R });
+        selectedIndex = balls.length - 1;
+        updateBallList();
+        drawAll();
+        updateScad();
+      }
+
+      function removeSelected() {
+        if (selectedIndex >= 0) {
+          balls.splice(selectedIndex, 1);
+          selectedIndex = -1;
+          updateBallList();
+          drawAll();
+          updateScad();
+        }
+      }
+
+      // --- BOSL2-style field for XY view (uses x,y,z) ---
+
+      function fieldAtXY(wx, wy) {
+        let f = 0;
+        for (const b of balls) {
+          const dx = wx - b.x;
+          const dy = wy - b.y;
+          const dz = -b.z; // plane z=0
+          const dist = Math.hypot(dx, dy, dz);
+          if (dist === 0) {
+            f += 1e9;
+          } else {
+            f += b.r / dist;
+          }
+        }
+        return f;
+      }
+
+      // --- Drawing ---
+
+      function drawXY() {
+        const width = xyCanvas.width;
+        const height = xyCanvas.height;
+        const iso = parseFloat(thresholdInput.value) || 1;
+        const resolution = Math.max(10, parseInt(resInput.value) || 120);
+
+        const stepX = width / resolution;
+        const stepY = height / resolution;
+
+        const imgData = xyCtx.createImageData(width, height);
+        const data = imgData.data;
+
+        for (let iy = 0; iy < resolution; iy++) {
+          const sampleY = iy * stepY + stepY / 2;
+          const wy = screenToWorldXY(0, sampleY).y;
+
+          for (let ix = 0; ix < resolution; ix++) {
+            const sampleX = ix * stepX + stepX / 2;
+            const wx = screenToWorldXY(sampleX, 0).x;
+
+            const value = fieldAtXY(wx, wy);
+            if (value < iso) continue;
+
+            const startX = Math.floor(ix * stepX);
+            const startY = Math.floor(iy * stepY);
+            const endX = Math.min(Math.floor((ix + 1) * stepX), width);
+            const endY = Math.min(Math.floor((iy + 1) * stepY), height);
+
+            for (let py = startY; py < endY; py++) {
+              for (let px = startX; px < endX; px++) {
+                const idx = (py * width + px) * 4;
+                data[idx] = 70;
+                data[idx + 1] = 130;
+                data[idx + 2] = 180;
+                data[idx + 3] = 200;
+              }
+            }
+          }
+        }
+
+        xyCtx.putImageData(imgData, 0, 0);
+
+        // Draw circle outlines (projection of radius on XY)
+        balls.forEach((b, i) => {
+          const { px, py } = worldToScreenXY(b.x, b.y);
+          xyCtx.beginPath();
+          xyCtx.strokeStyle = i === selectedIndex ? '#cc0000' : '#000000';
+          xyCtx.lineWidth = i === selectedIndex ? 2 : 1;
+          xyCtx.arc(px, py, b.r, 0, Math.PI * 2);
+          xyCtx.stroke();
+
+          xyCtx.beginPath();
+          xyCtx.fillStyle = i === selectedIndex ? '#cc0000' : '#000000';
+          xyCtx.arc(px, py, 3, 0, Math.PI * 2);
+          xyCtx.fill();
+        });
+      }
+
+      function drawXZ() {
+        xzCtx.clearRect(0, 0, xzCanvas.width, xzCanvas.height);
+        balls.forEach((b, i) => {
+          const { px, py } = worldToScreenXZ(b.x, b.z);
+          xzCtx.beginPath();
+          xzCtx.strokeStyle = i === selectedIndex ? '#cc0000' : '#000000';
+          xzCtx.lineWidth = i === selectedIndex ? 2 : 1;
+          xzCtx.arc(px, py, b.r, 0, Math.PI * 2);
+          xzCtx.stroke();
+
+          xzCtx.beginPath();
+          xzCtx.fillStyle = i === selectedIndex ? '#cc0000' : '#000000';
+          xzCtx.arc(px, py, 3, 0, Math.PI * 2);
+          xzCtx.fill();
+        });
+      }
+
+      function drawYZ() {
+        yzCtx.clearRect(0, 0, yzCanvas.width, yzCanvas.height);
+        balls.forEach((b, i) => {
+          const { px, py } = worldToScreenYZ(b.y, b.z);
+          yzCtx.beginPath();
+          yzCtx.strokeStyle = i === selectedIndex ? '#cc0000' : '#000000';
+          yzCtx.lineWidth = i === selectedIndex ? 2 : 1;
+          yzCtx.arc(px, py, b.r, 0, Math.PI * 2);
+          yzCtx.stroke();
+
+          yzCtx.beginPath();
+          yzCtx.fillStyle = i === selectedIndex ? '#cc0000' : '#000000';
+          yzCtx.arc(px, py, 3, 0, Math.PI * 2);
+          yzCtx.fill();
+        });
+      }
+
+      function drawAll() {
+        drawXY();
+        drawXZ();
+        drawYZ();
+      }
+
+      // --- OpenSCAD export (BOSL2 metaballs) ---
 
       function updateScad() {
-        const threshold = parseFloat(thresholdInput.value);
+        const threshold = parseFloat(thresholdInput.value) || 1;
 
-        // Track XY extents and metaball sizes
-        let minX = Infinity, minY = Infinity;
-        let maxX = -Infinity, maxY = -Infinity;
-        let specEntries = [];
+        let minX = Infinity, minY = Infinity, minZ = Infinity;
+        let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
         let sumR = 0;
         let maxR = 0;
 
-        balls.forEach((b) => {
-          // Map from canvas coords to OpenSCAD world coords (origin at centre, Y up)
-          const x = b.x - canvas.width / 2;
-          const y = canvas.height / 2 - b.y;
-          const z = 0;
-          const r = b.r;
+        const specEntries = [];
+
+        balls.forEach(b => {
+          const { x, y, z, r } = b;
 
           sumR += r;
           if (r > maxR) maxR = r;
 
-          // Tight XY extents: centre ± radius
           minX = Math.min(minX, x - r);
           maxX = Math.max(maxX, x + r);
           minY = Math.min(minY, y - r);
           maxY = Math.max(maxY, y + r);
+          minZ = Math.min(minZ, z - r);
+          maxZ = Math.max(maxZ, z + r);
 
-          // metaball spec entry
           specEntries.push(
             `    move([${x.toFixed(2)}, ${y.toFixed(2)}, ${z.toFixed(2)}]), mb_sphere(${r.toFixed(2)})`
           );
         });
 
-        // Fallback if no balls
         if (balls.length === 0) {
-          minX = minY = -50;
-          maxX = maxY = 50;
+          minX = minY = minZ = -50;
+          maxX = maxY = maxZ = 50;
           maxR = 25;
         }
 
-        // --- Inflate XY bounding box generously ---
-
         const cx = (minX + maxX) / 2;
         const cy = (minY + maxY) / 2;
+        const cz = (minZ + maxZ) / 2;
 
         let hx = (maxX - minX) / 2;
         let hy = (maxY - minY) / 2;
+        let hz = (maxZ - minZ) / 2;
 
         if (!isFinite(hx) || hx <= 0) hx = maxR || 10;
         if (!isFinite(hy) || hy <= 0) hy = maxR || 10;
+        if (!isFinite(hz) || hz <= 0) hz = maxR || 10;
+
         hx = Math.max(hx, maxR);
         hy = Math.max(hy, maxR);
+        hz = Math.max(hz, maxR);
 
-        const inflateXY = 1.75; // 75% margin in each direction
+        const inflate = 1.75;
 
-        minX = cx - hx * inflateXY;
-        maxX = cx + hx * inflateXY;
-        minY = cy - hy * inflateXY;
-        maxY = cy + hy * inflateXY;
-
-        // --- Z range: big symmetric slab so nothing gets clipped vertically ---
-
-        const xySpan = Math.max(hx, hy);
-        const halfZ = Math.max(maxR * 2.0, xySpan * 1.2);
-
-        const minZ = -halfZ;
-        const maxZ = halfZ;
-
-        // --- Heuristic voxel size ---
+        minX = cx - hx * inflate;
+        maxX = cx + hx * inflate;
+        minY = cy - hy * inflate;
+        maxY = cy + hy * inflate;
+        minZ = cz - hz * inflate;
+        maxZ = cz + hz * inflate;
 
         const baseVoxel = 10;
         const n = Math.max(1, balls.length);
         const avgR = balls.length ? (sumR / balls.length) : baseVoxel;
-        const complexity = n * (avgR / 60); // ~1 for one ball of radius ~60
-
+        const complexity = n * (avgR / 60);
         let voxelSize = baseVoxel * (1 + 0.25 * (complexity - 1));
         voxelSize = Math.max(5, Math.min(voxelSize, 40));
-
-        // --- Build SCAD code ---
 
         let code = '';
         code += '// Generated by metaball_editor\n';
@@ -341,184 +557,146 @@
         scadcodeTextarea.value = code;
       }
 
-      // --- BOSL2-like field for 2D preview ----------------------------------
+      // --- Interaction (click/drag/wheel) ---
 
-      // Field in world coordinates (origin at canvas centre, Y up),
-      // matching mb_sphere(coeff)/r behaviour.
-      function fieldAtWorld(wx, wy) {
-        let f = 0;
-        for (const b of balls) {
-          // Ball centre in world coords
-          const bx = b.x - canvas.width / 2;
-          const by = canvas.height / 2 - b.y;
-
-          const dx = wx - bx;
-          const dy = wy - by;
-          const dist = Math.hypot(dx, dy);
-
-          const coeff = b.r; // treat radius slider as BOSL2 coeff
-
-          if (dist === 0) {
-            f += 1e9;
-          } else {
-            f += coeff / dist;
-          }
-        }
-        return f;
-      }
-
-      // Draw 2D iso-surface + handles
-      function draw() {
-        const width = canvas.width;
-        const height = canvas.height;
-        const iso = parseFloat(thresholdInput.value) || 1;
-        const resolution = Math.max(10, parseInt(resInput.value) || 120);
-
-        ctx.clearRect(0, 0, width, height);
-
-        const stepX = width / resolution;
-        const stepY = height / resolution;
-
-        const imgData = ctx.getImageData(0, 0, width, height);
-        const data = imgData.data;
-
-        for (let iy = 0; iy < resolution; iy++) {
-          const sampleY = iy * stepY + stepY / 2;
-          const wy = height / 2 - sampleY; // world Y
-
-          for (let ix = 0; ix < resolution; ix++) {
-            const sampleX = ix * stepX + stepX / 2;
-            const wx = sampleX - width / 2; // world X
-
-            const value = fieldAtWorld(wx, wy);
-            const inside = value >= iso;
-
-            const startX = Math.floor(ix * stepX);
-            const startY = Math.floor(iy * stepY);
-            const endX = Math.min(Math.floor((ix + 1) * stepX), width);
-            const endY = Math.min(Math.floor((iy + 1) * stepY), height);
-
-            if (!inside) continue;
-
-            for (let py = startY; py < endY; py++) {
-              for (let px = startX; px < endX; px++) {
-                const idx = (py * width + px) * 4;
-                data[idx] = 70;
-                data[idx + 1] = 130;
-                data[idx + 2] = 180;
-                data[idx + 3] = 180;
-              }
-            }
-          }
-        }
-
-        ctx.putImageData(imgData, 0, 0);
-
-        // Draw circles / handles
-        balls.forEach((b, i) => {
-          ctx.beginPath();
-          ctx.strokeStyle = i === selectedIndex ? '#cc0000' : '#000000';
-          ctx.lineWidth = i === selectedIndex ? 2 : 1;
-          ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
-          ctx.stroke();
-
-          ctx.beginPath();
-          ctx.fillStyle = i === selectedIndex ? '#cc0000' : '#000000';
-          ctx.arc(b.x, b.y, 3, 0, Math.PI * 2);
-          ctx.fill();
-        });
-      }
-
-      // --- Interaction -------------------------------------------------------
-
-      let dragging = false;
-      let dragOffset = { x: 0, y: 0 };
-
-      canvas.addEventListener('mousedown', e => {
-        const rect = canvas.getBoundingClientRect();
-        const x = e.clientX - rect.left;
-        const y = e.clientY - rect.top;
-
-        let found = -1;
+      function hitTest(view, px, py) {
         for (let i = balls.length - 1; i >= 0; i--) {
           const b = balls[i];
-          const dx = x - b.x;
-          const dy = y - b.y;
+          let sx, sy;
+          if (view === 'xy') {
+            ({ px: sx, py: sy } = worldToScreenXY(b.x, b.y));
+          } else if (view === 'xz') {
+            ({ px: sx, py: sy } = worldToScreenXZ(b.x, b.z));
+          } else {
+            ({ px: sx, py: sy } = worldToScreenYZ(b.y, b.z));
+          }
+          const dx = px - sx;
+          const dy = py - sy;
           if (Math.hypot(dx, dy) <= b.r) {
-            found = i;
-            break;
+            return i;
           }
         }
-        selectedIndex = found;
-        updateBallList();
-        draw();
+        return -1;
+      }
 
-        if (selectedIndex >= 0) {
-          const b = balls[selectedIndex];
-          dragging = true;
-          dragOffset.x = b.x - x;
-          dragOffset.y = b.y - y;
-        } else {
-          dragging = false;
-        }
-      });
-
-      window.addEventListener('mousemove', e => {
-        if (!dragging || selectedIndex < 0) return;
+      function onDown(view, canvas, e) {
         const rect = canvas.getBoundingClientRect();
-        const x = e.clientX - rect.left;
-        const y = e.clientY - rect.top;
-        const b = balls[selectedIndex];
-        b.x = x + dragOffset.x;
-        b.y = y + dragOffset.y;
-        draw();
-        updateScad();
-      });
+        const px = e.clientX - rect.left;
+        const py = e.clientY - rect.top;
 
-      window.addEventListener('mouseup', () => {
-        dragging = false;
-      });
+        const idx = hitTest(view, px, py);
+        selectedIndex = idx;
+        updateBallList();
+        drawAll();
 
-      canvas.addEventListener('wheel', e => {
-        if (selectedIndex >= 0) {
-          e.preventDefault();
-          const delta = e.deltaY;
-          const b = balls[selectedIndex];
-          const factor = 1 + (delta > 0 ? -0.05 : 0.05);
-          b.r = Math.max(5, b.r * factor);
-          updateBallList();
-          draw();
-          updateScad();
+        if (idx < 0) {
+          dragging = false;
+          return;
         }
-      }, { passive: false });
 
-      addBtn.addEventListener('click', () => {
-        addBall();
-      });
+        dragView = view;
+        dragging = true;
 
-      removeBtn.addEventListener('click', () => {
-        removeSelected();
-      });
+        const b = balls[idx];
+
+        if (view === 'xy') {
+          const { x, y } = screenToWorldXY(px, py);
+          dragOffset.dx = b.x - x;
+          dragOffset.dy = b.y - y;
+          dragOffset.dz = 0;
+        } else if (view === 'xz') {
+          const { x, z } = screenToWorldXZ(px, py);
+          dragOffset.dx = b.x - x;
+          dragOffset.dy = 0;
+          dragOffset.dz = b.z - z;
+        } else {
+          const { y, z } = screenToWorldYZ(px, py);
+          dragOffset.dx = 0;
+          dragOffset.dy = b.y - y;
+          dragOffset.dz = b.z - z;
+        }
+      }
+
+      function onMove(e) {
+        if (!dragging || selectedIndex < 0) return;
+        const b = balls[selectedIndex];
+
+        if (dragView === 'xy') {
+          const rect = xyCanvas.getBoundingClientRect();
+          const px = e.clientX - rect.left;
+          const py = e.clientY - rect.top;
+          const { x, y } = screenToWorldXY(px, py);
+          b.x = x + dragOffset.dx;
+          b.y = y + dragOffset.dy;
+        } else if (dragView === 'xz') {
+          const rect = xzCanvas.getBoundingClientRect();
+          const px = e.clientX - rect.left;
+          const py = e.clientY - rect.top;
+          const { x, z } = screenToWorldXZ(px, py);
+          b.x = x + dragOffset.dx;
+          b.z = z + dragOffset.dz;
+        } else if (dragView === 'yz') {
+          const rect = yzCanvas.getBoundingClientRect();
+          const px = e.clientX - rect.left;
+          const py = e.clientY - rect.top;
+          const { y, z } = screenToWorldYZ(px, py);
+          b.y = y + dragOffset.dy;
+          b.z = z + dragOffset.dz;
+        }
+
+        drawAll();
+        updateScad();
+      }
+
+      function onUp() {
+        dragging = false;
+      }
+
+      xyCanvas.addEventListener('mousedown', e => onDown('xy', xyCanvas, e));
+      xzCanvas.addEventListener('mousedown', e => onDown('xz', xzCanvas, e));
+      yzCanvas.addEventListener('mousedown', e => onDown('yz', yzCanvas, e));
+
+      window.addEventListener('mousemove', onMove);
+      window.addEventListener('mouseup', onUp);
+
+      function onWheel(e) {
+        if (selectedIndex < 0) return;
+        e.preventDefault();
+        const b = balls[selectedIndex];
+        const delta = e.deltaY;
+        const factor = 1 + (delta > 0 ? -0.05 : 0.05);
+        b.r = Math.max(5, b.r * factor);
+        updateBallList();
+        drawAll();
+        updateScad();
+      }
+
+      xyCanvas.addEventListener('wheel', onWheel, { passive: false });
+      xzCanvas.addEventListener('wheel', onWheel, { passive: false });
+      yzCanvas.addEventListener('wheel', onWheel, { passive: false });
+
+      // --- Buttons & inputs ---
+
+      addBtn.addEventListener('click', () => addBall());
+      removeBtn.addEventListener('click', removeSelected);
 
       window.addEventListener('keydown', e => {
-        if (e.key === 'Delete' && selectedIndex >= 0) {
-          removeSelected();
-        }
+        if (e.key === 'Delete' && selectedIndex >= 0) removeSelected();
       });
 
       thresholdInput.addEventListener('input', () => {
-        draw();
+        drawAll();
         updateScad();
       });
 
-      resInput.addEventListener('input', () => {
-        draw();
-      });
+      resInput.addEventListener('input', drawAll);
+
+      // --- Init ---
 
       function init() {
-        resize();
-        addBall(canvas.width / 2 - 60, canvas.height / 2, Math.min(canvas.width, canvas.height) * 0.1);
-        addBall(canvas.width / 2 + 60, canvas.height / 2, Math.min(canvas.width, canvas.height) * 0.1);
+        resizeCanvases();
+        addBall(-60, 0, 0, Math.min(xyCanvas.width, xyCanvas.height) * 0.1);
+        addBall(60, 0, 0, Math.min(xyCanvas.width, xyCanvas.height) * 0.1);
       }
 
       window.addEventListener('load', init);
