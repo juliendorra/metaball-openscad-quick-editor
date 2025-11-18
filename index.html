@@ -6,23 +6,18 @@
   This page implements a lightweight metaball editor and generator.  Each
   metaball is defined by a centre point (x,y) and a radius.  The editor
   allows you to add and remove balls, drag them around with the mouse and
-  change their radius with the mouse wheel.  It provides a simple 2‑D
+  change their radius with the mouse wheel.  It provides a simple 2-D
   preview that calculates a scalar field for the balls and shades all
   pixels above the chosen threshold.  The generated OpenSCAD code uses
-  BOSL2's metaballs function from isosurface.scad: a list of balls is
-  emitted in the form [x, y, z, radius] for use in a 3‑D model.
+  BOSL2's metaballs function from isosurface.scad: the spec list is
+  emitted as pairs of transforms and mb_sphere() calls.
 
   The preview does not rely on any external libraries or network
-  resources; everything is implemented in vanilla JavaScript.  Because
-  this environment has no network access, we cannot embed the full
-  OpenSCAD playground here.  However, the generated code can be copied
-  into your own OpenSCAD installation (with the BOSL2 library
-  installed) to produce a proper 3‑D metaball object.
+  resources; everything is implemented in vanilla JavaScript.
 -->
 
 <head>
   <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
-
   <title>Metaball Editor for OpenSCAD</title>
   <style>
     html,
@@ -122,19 +117,16 @@
 
 <body>
   <div id="container">
-    <canvas id="canvas" width="1094" height="832"></canvas>
+    <canvas id="canvas"></canvas>
     <div id="sidebar">
       <h1>Metaball Editor</h1>
       <div class="hint">
-        <p>Click inside the canvas to select or move a metaball. Drag it to change its position. Use the mouse wheel while a ball is selected to adjust its radius. The colour overlay shows the metaball isosurface at the chosen threshold.</p>
+        <p>Click inside the canvas to select or move a metaball. Drag it to change its position. Use the mouse wheel while a ball is selected to adjust its radius. The coloured overlay shows the metaball isosurface at the chosen threshold.</p>
       </div>
       <h2>Metaballs</h2>
-      <div id="ballList">
-        <div class="ball-entry"><span>Ball 1</span><input type="number" min="1" step="1" title="Radius"></div>
-        <div class="ball-entry"><span>Ball 2</span><input type="number" min="1" step="1" title="Radius"></div>
-      </div>
+      <div id="ballList"></div>
       <button id="addBtn">Add Ball</button>
-      <button id="removeBtn" disabled="">Remove Selected</button>
+      <button id="removeBtn" disabled>Remove Selected</button>
       <div class="hint">
         You can also press the <code>Delete</code> key to remove the selected ball.
       </div>
@@ -146,9 +138,13 @@
         <label>Resolution: <input type="number" id="res" min="10" max="400" step="10" value="120"></label>
       </div>
       <h2>Generated OpenSCAD</h2>
-      <textarea id="scadcode" readonly=""></textarea>
+      <textarea id="scadcode" readonly></textarea>
       <div class="hint">
-        Copy this code into OpenSCAD (with the BOSL2 library installed) to render your metaballs. The <code>spec</code> array contains pairs of transformations and built‑in metaball functions (for example, <code>move([x,y,z])</code> and <code>mb_sphere(radius)</code>)【673561716461246†L280-L304】. The <code>bounding_box</code> defines the evaluation region of the isosurface【673561716461246†L326-L334】. The <code>voxel_size</code> controls the resolution of the triangulation, and <code>isovalue</code> defines the blending threshold【673561716461246†L326-L361】.
+        Copy this code into OpenSCAD (with the BOSL2 library installed) to render your metaballs. The
+        <code>spec</code> array contains pairs of transformations and metaball functions
+        (<code>move([x,y,z])</code> and <code>mb_sphere(radius)</code>). The <code>bounding_box</code>
+        defines the evaluation region of the isosurface. <code>voxel_size</code> controls the resolution
+        of the triangulation and <code>isovalue</code> defines the blending threshold.
       </div>
     </div>
   </div>
@@ -164,10 +160,9 @@
       const resInput = document.getElementById('res');
       const scadcodeTextarea = document.getElementById('scadcode');
 
-      // Data structure for metaballs
       let balls = [];
       let selectedIndex = -1;
-      // Canvas size management
+
       function resize() {
         canvas.width = canvas.clientWidth;
         canvas.height = canvas.clientHeight;
@@ -175,7 +170,6 @@
       }
       window.addEventListener('resize', resize);
 
-      // Add a new ball at the centre of the canvas
       function addBall(x, y, r) {
         const radius = r !== undefined ? r : Math.min(canvas.width, canvas.height) * 0.1;
         const cx = x !== undefined ? x : canvas.width / 2;
@@ -186,7 +180,7 @@
         draw();
         updateScad();
       }
-      // Remove selected ball
+
       function removeSelected() {
         if (selectedIndex >= 0) {
           balls.splice(selectedIndex, 1);
@@ -196,9 +190,8 @@
           updateScad();
         }
       }
-      // Update the list UI
+
       function updateBallList() {
-        // Clear list
         ballList.innerHTML = '';
         balls.forEach((b, i) => {
           const entry = document.createElement('div');
@@ -209,6 +202,7 @@
           const label = document.createElement('span');
           label.textContent = `Ball ${i + 1}`;
           entry.appendChild(label);
+
           const radiusInput = document.createElement('input');
           radiusInput.type = 'number';
           radiusInput.min = 1;
@@ -224,16 +218,19 @@
             }
           };
           entry.appendChild(radiusInput);
+
           entry.onclick = () => {
             selectedIndex = i;
             updateBallList();
             draw();
           };
+
           ballList.appendChild(entry);
         });
         removeBtn.disabled = selectedIndex < 0;
       }
-      // Generate OpenSCAD code
+
+      // --- OpenSCAD export ---------------------------------------------------
 
       function updateScad() {
         const threshold = parseFloat(thresholdInput.value);
@@ -246,7 +243,7 @@
         let maxR = 0;
 
         balls.forEach((b) => {
-          // Origin at canvas centre
+          // Map from canvas coords to OpenSCAD world coords (origin at centre, Y up)
           const x = b.x - canvas.width / 2;
           const y = canvas.height / 2 - b.y;
           const z = 0;
@@ -276,22 +273,18 @@
 
         // --- Inflate XY bounding box generously ---
 
-        // Centre of the tight XY box
         const cx = (minX + maxX) / 2;
         const cy = (minY + maxY) / 2;
 
-        // Half-extents
         let hx = (maxX - minX) / 2;
         let hy = (maxY - minY) / 2;
 
-        // Ensure non-zero and at least as large as maxR
         if (!isFinite(hx) || hx <= 0) hx = maxR || 10;
         if (!isFinite(hy) || hy <= 0) hy = maxR || 10;
         hx = Math.max(hx, maxR);
         hy = Math.max(hy, maxR);
 
-        // Inflate factor in XY: 1.75 = +75% margin
-        const inflateXY = 1.75;
+        const inflateXY = 1.75; // 75% margin in each direction
 
         minX = cx - hx * inflateXY;
         maxX = cx + hx * inflateXY;
@@ -300,23 +293,24 @@
 
         // --- Z range: big symmetric slab so nothing gets clipped vertically ---
 
-        // Use a generous half-height based on both radius and XY span
         const xySpan = Math.max(hx, hy);
-        const halfZ = Math.max(maxR * 2.0, xySpan * 1.2);  // very safe
+        const halfZ = Math.max(maxR * 2.0, xySpan * 1.2);
 
         const minZ = -halfZ;
         const maxZ = halfZ;
 
         // --- Heuristic voxel size ---
+
         const baseVoxel = 10;
         const n = Math.max(1, balls.length);
         const avgR = balls.length ? (sumR / balls.length) : baseVoxel;
-        const complexity = n * (avgR / 60);  // ~1 for one ball of radius ~60
+        const complexity = n * (avgR / 60); // ~1 for one ball of radius ~60
 
         let voxelSize = baseVoxel * (1 + 0.25 * (complexity - 1));
-        voxelSize = Math.max(5, Math.min(voxelSize, 40));  // clamp
+        voxelSize = Math.max(5, Math.min(voxelSize, 40));
 
         // --- Build SCAD code ---
+
         let code = '';
         code += '// Generated by metaball_editor\n';
         code += '// Include BOSL2 libraries providing metaballs and transformations\n';
@@ -347,87 +341,110 @@
         scadcodeTextarea.value = code;
       }
 
-      // Compute scalar field value at a canvas position
-      function fieldAt(x, y) {
+      // --- BOSL2-like field for 2D preview ----------------------------------
+
+      // Field in world coordinates (origin at canvas centre, Y up),
+      // matching mb_sphere(coeff)/r behaviour.
+      function fieldAtWorld(wx, wy) {
         let f = 0;
-        balls.forEach(b => {
-          const dx = x - b.x;
-          const dy = y - b.y;
-          const dist2 = dx * dx + dy * dy + 1e-6;
-          // Contribution: squared radius over distance squared
-          f += (b.r * b.r) / dist2;
-        });
+        for (const b of balls) {
+          // Ball centre in world coords
+          const bx = b.x - canvas.width / 2;
+          const by = canvas.height / 2 - b.y;
+
+          const dx = wx - bx;
+          const dy = wy - by;
+          const dist = Math.hypot(dx, dy);
+
+          const coeff = b.r; // treat radius slider as BOSL2 coeff
+
+          if (dist === 0) {
+            f += 1e9;
+          } else {
+            f += coeff / dist;
+          }
+        }
         return f;
       }
-      // Draw the scene: iso-surface shading + circles outlines
+
+      // Draw 2D iso-surface + handles
       function draw() {
         const width = canvas.width;
         const height = canvas.height;
-        const threshold = parseFloat(thresholdInput.value);
-        const resolution = Math.max(10, parseInt(resInput.value));
+        const iso = parseFloat(thresholdInput.value) || 1;
+        const resolution = Math.max(10, parseInt(resInput.value) || 120);
+
         ctx.clearRect(0, 0, width, height);
-        // Render iso-surface by sampling at reduced resolution to improve performance
+
         const stepX = width / resolution;
         const stepY = height / resolution;
-        // Create an offscreen image to accumulate colour values
+
         const imgData = ctx.getImageData(0, 0, width, height);
         const data = imgData.data;
+
         for (let iy = 0; iy < resolution; iy++) {
+          const sampleY = iy * stepY + stepY / 2;
+          const wy = height / 2 - sampleY; // world Y
+
           for (let ix = 0; ix < resolution; ix++) {
             const sampleX = ix * stepX + stepX / 2;
-            const sampleY = iy * stepY + stepY / 2;
-            const value = fieldAt(sampleX, sampleY);
-            const shade = value >= threshold;
-            // Map the small sample to a block of pixels
+            const wx = sampleX - width / 2; // world X
+
+            const value = fieldAtWorld(wx, wy);
+            const inside = value >= iso;
+
             const startX = Math.floor(ix * stepX);
             const startY = Math.floor(iy * stepY);
             const endX = Math.min(Math.floor((ix + 1) * stepX), width);
             const endY = Math.min(Math.floor((iy + 1) * stepY), height);
+
+            if (!inside) continue;
+
             for (let py = startY; py < endY; py++) {
               for (let px = startX; px < endX; px++) {
                 const idx = (py * width + px) * 4;
-                if (shade) {
-                  data[idx] = 70; // red
-                  data[idx + 1] = 130; // green
-                  data[idx + 2] = 180; // blue
-                  data[idx + 3] = 180; // alpha
-                } else {
-                  // background lighten by leaving alpha 0 ensures previous clearRect is visible
-                  // We'll leave background as default (transparent) so underlying white shows.
-                }
+                data[idx] = 70;
+                data[idx + 1] = 130;
+                data[idx + 2] = 180;
+                data[idx + 3] = 180;
               }
             }
           }
         }
+
         ctx.putImageData(imgData, 0, 0);
-        // Draw each ball as a circle outline
+
+        // Draw circles / handles
         balls.forEach((b, i) => {
           ctx.beginPath();
           ctx.strokeStyle = i === selectedIndex ? '#cc0000' : '#000000';
           ctx.lineWidth = i === selectedIndex ? 2 : 1;
           ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
           ctx.stroke();
-          // draw small handle
+
           ctx.beginPath();
           ctx.fillStyle = i === selectedIndex ? '#cc0000' : '#000000';
           ctx.arc(b.x, b.y, 3, 0, Math.PI * 2);
           ctx.fill();
         });
       }
-      // Mouse interaction
+
+      // --- Interaction -------------------------------------------------------
+
       let dragging = false;
       let dragOffset = { x: 0, y: 0 };
+
       canvas.addEventListener('mousedown', e => {
         const rect = canvas.getBoundingClientRect();
         const x = e.clientX - rect.left;
         const y = e.clientY - rect.top;
-        // Determine if clicking on a ball
+
         let found = -1;
         for (let i = balls.length - 1; i >= 0; i--) {
           const b = balls[i];
           const dx = x - b.x;
           const dy = y - b.y;
-          if (Math.sqrt(dx * dx + dy * dy) <= b.r) {
+          if (Math.hypot(dx, dy) <= b.r) {
             found = i;
             break;
           }
@@ -435,6 +452,7 @@
         selectedIndex = found;
         updateBallList();
         draw();
+
         if (selectedIndex >= 0) {
           const b = balls[selectedIndex];
           dragging = true;
@@ -444,6 +462,7 @@
           dragging = false;
         }
       });
+
       window.addEventListener('mousemove', e => {
         if (!dragging || selectedIndex < 0) return;
         const rect = canvas.getBoundingClientRect();
@@ -455,16 +474,16 @@
         draw();
         updateScad();
       });
-      window.addEventListener('mouseup', e => {
+
+      window.addEventListener('mouseup', () => {
         dragging = false;
       });
-      // Mouse wheel to change radius
+
       canvas.addEventListener('wheel', e => {
         if (selectedIndex >= 0) {
           e.preventDefault();
           const delta = e.deltaY;
           const b = balls[selectedIndex];
-          // zoom in/out – negative delta -> enlarge
           const factor = 1 + (delta > 0 ? -0.05 : 0.05);
           b.r = Math.max(5, b.r * factor);
           updateBallList();
@@ -472,39 +491,39 @@
           updateScad();
         }
       }, { passive: false });
-      // Add ball button
+
       addBtn.addEventListener('click', () => {
         addBall();
       });
-      // Remove button
+
       removeBtn.addEventListener('click', () => {
         removeSelected();
       });
-      // Delete key to remove selected
+
       window.addEventListener('keydown', e => {
         if (e.key === 'Delete' && selectedIndex >= 0) {
           removeSelected();
         }
       });
-      // Threshold change
+
       thresholdInput.addEventListener('input', () => {
         draw();
         updateScad();
       });
-      // Resolution change
+
       resInput.addEventListener('input', () => {
         draw();
       });
-      // Add an initial ball for convenience
+
       function init() {
         resize();
         addBall(canvas.width / 2 - 60, canvas.height / 2, Math.min(canvas.width, canvas.height) * 0.1);
         addBall(canvas.width / 2 + 60, canvas.height / 2, Math.min(canvas.width, canvas.height) * 0.1);
       }
+
       window.addEventListener('load', init);
     })();
   </script>
-
 </body>
 
 </html>
