@@ -1,0 +1,464 @@
+<!DOCTYPE html>
+<html lang="en">
+<!--
+  OpenSCAD Metaball Quick Editor
+
+  This page implements a lightweight metaball editor and generator.  Each
+  metaball is defined by a centre point (x,y) and a radius.  The editor
+  allows you to add and remove balls, drag them around with the mouse and
+  change their radius with the mouse wheel.  It provides a simple 2‑D
+  preview that calculates a scalar field for the balls and shades all
+  pixels above the chosen threshold.  The generated OpenSCAD code uses
+  BOSL2's metaballs function from isosurface.scad: a list of balls is
+  emitted in the form [x, y, z, radius] for use in a 3‑D model.
+
+  The preview does not rely on any external libraries or network
+  resources; everything is implemented in vanilla JavaScript.  Because
+  this environment has no network access, we cannot embed the full
+  OpenSCAD playground here.  However, the generated code can be copied
+  into your own OpenSCAD installation (with the BOSL2 library
+  installed) to produce a proper 3‑D metaball object.
+-->
+
+<head>
+  <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+
+  <title>Metaball Editor for OpenSCAD</title>
+  <style>
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      overflow: hidden;
+      font-family: sans-serif;
+      background-color: #f2f2f2;
+    }
+
+    /* Layout container uses explicit column widths so that the sidebar is always visible. */
+    #container {
+      display: flex;
+      width: 100vw;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    #canvas {
+      width: calc(100% - 320px);
+      height: 100%;
+      background-color: white;
+      border-right: 1px solid #ccc;
+      cursor: crosshair;
+      touch-action: none;
+      display: block;
+    }
+
+    #sidebar {
+      width: 320px;
+      height: 100%;
+      box-sizing: border-box;
+      padding: 1em;
+      background: #fafafa;
+      overflow-y: auto;
+    }
+
+    h1 {
+      font-size: 1.4em;
+      margin-top: 0;
+    }
+
+    h2 {
+      font-size: 1.2em;
+      margin-bottom: 0.2em;
+    }
+
+    .ball-entry {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 0.25em 0;
+      border-bottom: 1px solid #e0e0e0;
+    }
+
+    .ball-entry span {
+      flex-grow: 1;
+    }
+
+    button {
+      margin: 0.25em 0;
+      padding: 0.3em 0.6em;
+      background: #007acc;
+      color: white;
+      border: none;
+      border-radius: 3px;
+      cursor: pointer;
+    }
+
+    button:disabled {
+      opacity: 0.5;
+      cursor: default;
+    }
+
+    input[type="number"] {
+      width: 80px;
+    }
+
+    #scadcode {
+      width: 100%;
+      height: 200px;
+      box-sizing: border-box;
+      font-family: monospace;
+      resize: vertical;
+      margin-top: 0.5em;
+    }
+
+    .hint {
+      font-size: 0.85em;
+      color: #555;
+      margin-top: 0.5em;
+    }
+  </style>
+</head>
+
+<body>
+  <div id="container">
+    <canvas id="canvas" width="1094" height="832"></canvas>
+    <div id="sidebar">
+      <h1>Metaball Editor</h1>
+      <div class="hint">
+        <p>Click inside the canvas to select or move a metaball. Drag it to change its position. Use the mouse wheel while a ball is selected to adjust its radius. The colour overlay shows the metaball isosurface at the chosen threshold.</p>
+      </div>
+      <h2>Metaballs</h2>
+      <div id="ballList">
+        <div class="ball-entry"><span>Ball 1</span><input type="number" min="1" step="1" title="Radius"></div>
+        <div class="ball-entry"><span>Ball 2</span><input type="number" min="1" step="1" title="Radius"></div>
+      </div>
+      <button id="addBtn">Add Ball</button>
+      <button id="removeBtn" disabled="">Remove Selected</button>
+      <div class="hint">
+        You can also press the <code>Delete</code> key to remove the selected ball.
+      </div>
+      <h2>Parameters</h2>
+      <div class="control">
+        <label>Threshold: <input type="number" id="threshold" min="0" step="0.1" value="1"></label>
+      </div>
+      <div class="control">
+        <label>Resolution: <input type="number" id="res" min="10" max="400" step="10" value="120"></label>
+      </div>
+      <h2>Generated OpenSCAD</h2>
+      <textarea id="scadcode" readonly=""></textarea>
+      <div class="hint">
+        Copy this code into OpenSCAD (with the BOSL2 library installed) to render your metaballs. The <code>spec</code> array contains pairs of transformations and built‑in metaball functions (for example, <code>move([x,y,z])</code> and <code>mb_sphere(radius)</code>)【673561716461246†L280-L304】. The <code>bounding_box</code> defines the evaluation region of the isosurface【673561716461246†L326-L334】. The <code>voxel_size</code> controls the resolution of the triangulation, and <code>isovalue</code> defines the blending threshold【673561716461246†L326-L361】.
+      </div>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      const canvas = document.getElementById('canvas');
+      const ctx = canvas.getContext('2d');
+      const ballList = document.getElementById('ballList');
+      const addBtn = document.getElementById('addBtn');
+      const removeBtn = document.getElementById('removeBtn');
+      const thresholdInput = document.getElementById('threshold');
+      const resInput = document.getElementById('res');
+      const scadcodeTextarea = document.getElementById('scadcode');
+
+      // Data structure for metaballs
+      let balls = [];
+      let selectedIndex = -1;
+      // Canvas size management
+      function resize() {
+        canvas.width = canvas.clientWidth;
+        canvas.height = canvas.clientHeight;
+        draw();
+      }
+      window.addEventListener('resize', resize);
+
+      // Add a new ball at the centre of the canvas
+      function addBall(x, y, r) {
+        const radius = r !== undefined ? r : Math.min(canvas.width, canvas.height) * 0.1;
+        const cx = x !== undefined ? x : canvas.width / 2;
+        const cy = y !== undefined ? y : canvas.height / 2;
+        balls.push({ x: cx, y: cy, r: radius });
+        selectedIndex = balls.length - 1;
+        updateBallList();
+        draw();
+        updateScad();
+      }
+      // Remove selected ball
+      function removeSelected() {
+        if (selectedIndex >= 0) {
+          balls.splice(selectedIndex, 1);
+          selectedIndex = -1;
+          updateBallList();
+          draw();
+          updateScad();
+        }
+      }
+      // Update the list UI
+      function updateBallList() {
+        // Clear list
+        ballList.innerHTML = '';
+        balls.forEach((b, i) => {
+          const entry = document.createElement('div');
+          entry.className = 'ball-entry';
+          if (i === selectedIndex) {
+            entry.style.background = '#e0f0ff';
+          }
+          const label = document.createElement('span');
+          label.textContent = `Ball ${i + 1}`;
+          entry.appendChild(label);
+          const radiusInput = document.createElement('input');
+          radiusInput.type = 'number';
+          radiusInput.min = 1;
+          radiusInput.step = 1;
+          radiusInput.value = Math.round(b.r);
+          radiusInput.title = 'Radius';
+          radiusInput.oninput = (e) => {
+            const val = parseFloat(e.target.value);
+            if (!isNaN(val) && val > 0) {
+              b.r = val;
+              draw();
+              updateScad();
+            }
+          };
+          entry.appendChild(radiusInput);
+          entry.onclick = () => {
+            selectedIndex = i;
+            updateBallList();
+            draw();
+          };
+          ballList.appendChild(entry);
+        });
+        removeBtn.disabled = selectedIndex < 0;
+      }
+      // Generate OpenSCAD code
+      function updateScad() {
+        const threshold = parseFloat(thresholdInput.value);
+        // Compute 3D coordinates and bounding box
+        let minX = Infinity, minY = Infinity, minZ = Infinity;
+        let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+        // Build spec list entries
+        let specEntries = [];
+        balls.forEach((b) => {
+          // Convert canvas coordinates to 3D coordinates.  The origin is at the centre of the canvas.
+          const x = b.x - canvas.width / 2;
+          const y = canvas.height / 2 - b.y;
+          const z = 0;
+          const r = b.r;
+          // Update bounding box min/max using ball extents
+          minX = Math.min(minX, x - r);
+          maxX = Math.max(maxX, x + r);
+          minY = Math.min(minY, y - r);
+          maxY = Math.max(maxY, y + r);
+          // For Z axis, use radius as extents since all spheres lie in the XY plane
+          minZ = Math.min(minZ, -r);
+          maxZ = Math.max(maxZ, r);
+          // Append transformation and metaball primitive to spec
+          specEntries.push(`    move([${x.toFixed(2)}, ${y.toFixed(2)}, ${z.toFixed(2)}]), mb_sphere(${r.toFixed(2)})`);
+        });
+        // If no balls, bounding box defaults to unit cube
+        if (balls.length === 0) {
+          minX = minY = minZ = -10;
+          maxX = maxY = maxZ = 10;
+        }
+        // Compute voxel_size based on resolution setting.  Use the smallest dimension divided by the resolution.
+        const dx = maxX - minX;
+        const dy = maxY - minY;
+        const dz = maxZ - minZ;
+        const minDim = Math.min(dx, dy, dz);
+        const resolution = Math.max(10, parseInt(resInput.value));
+        const voxelSize = minDim / resolution;
+        let code = '';
+        code += '// Generated by metaball_editor\n';
+        code += '// Include BOSL2 libraries providing metaballs and transformations\n';
+        code += 'include <BOSL2/std.scad>\n';
+        code += 'include <BOSL2/isosurface.scad>\n\n';
+        code += '// Define metaball specification using transformations and built-in metaball primitives.\n';
+        code += 'spec = [\n';
+        code += specEntries.join(',\n') + '\n';
+        code += '];\n\n';
+        // Define the bounding box as a pair of corners
+        code += '// Bounding box surrounds all metaballs.  Adjust if needed.\n';
+        code += `bounding_box = [[${minX.toFixed(2)}, ${minY.toFixed(2)}, ${minZ.toFixed(2)}], [` +
+          `${maxX.toFixed(2)}, ${maxY.toFixed(2)}, ${maxZ.toFixed(2)}]];\n\n`;
+        // Define voxel size and isovalue
+        code += '// Voxel size controls resolution; smaller values give smoother surfaces but take longer.\n';
+        code += `voxel_size = ${voxelSize.toFixed(2)};\n`;
+        code += `isovalue = ${threshold.toFixed(2)};\n\n`;
+        code += '// Render the metaballs using named parameters.\n';
+        // When calling BOSL2\'s metaballs() function, passing arguments by name ensures that
+        // the correct variables are used in the assertion checks performed inside the
+        // library.  Using named parameters also makes the generated code more explicit,
+        // avoiding confusion over positional order.  See the BOSL2 documentation for
+        // example usage【783004082566671†L690-L720】.
+        code += 'metaballs(\n';
+        code += '    spec=spec,\n';
+        code += '    bounding_box=bounding_box,\n';
+        code += '    voxel_size=voxel_size,\n';
+        code += '    isovalue=isovalue\n';
+        code += ');\n';
+        scadcodeTextarea.value = code;
+      }
+      // Compute scalar field value at a canvas position
+      function fieldAt(x, y) {
+        let f = 0;
+        balls.forEach(b => {
+          const dx = x - b.x;
+          const dy = y - b.y;
+          const dist2 = dx * dx + dy * dy + 1e-6;
+          // Contribution: squared radius over distance squared
+          f += (b.r * b.r) / dist2;
+        });
+        return f;
+      }
+      // Draw the scene: iso-surface shading + circles outlines
+      function draw() {
+        const width = canvas.width;
+        const height = canvas.height;
+        const threshold = parseFloat(thresholdInput.value);
+        const resolution = Math.max(10, parseInt(resInput.value));
+        ctx.clearRect(0, 0, width, height);
+        // Render iso-surface by sampling at reduced resolution to improve performance
+        const stepX = width / resolution;
+        const stepY = height / resolution;
+        // Create an offscreen image to accumulate colour values
+        const imgData = ctx.getImageData(0, 0, width, height);
+        const data = imgData.data;
+        for (let iy = 0; iy < resolution; iy++) {
+          for (let ix = 0; ix < resolution; ix++) {
+            const sampleX = ix * stepX + stepX / 2;
+            const sampleY = iy * stepY + stepY / 2;
+            const value = fieldAt(sampleX, sampleY);
+            const shade = value >= threshold;
+            // Map the small sample to a block of pixels
+            const startX = Math.floor(ix * stepX);
+            const startY = Math.floor(iy * stepY);
+            const endX = Math.min(Math.floor((ix + 1) * stepX), width);
+            const endY = Math.min(Math.floor((iy + 1) * stepY), height);
+            for (let py = startY; py < endY; py++) {
+              for (let px = startX; px < endX; px++) {
+                const idx = (py * width + px) * 4;
+                if (shade) {
+                  data[idx] = 70; // red
+                  data[idx + 1] = 130; // green
+                  data[idx + 2] = 180; // blue
+                  data[idx + 3] = 180; // alpha
+                } else {
+                  // background lighten by leaving alpha 0 ensures previous clearRect is visible
+                  // We'll leave background as default (transparent) so underlying white shows.
+                }
+              }
+            }
+          }
+        }
+        ctx.putImageData(imgData, 0, 0);
+        // Draw each ball as a circle outline
+        balls.forEach((b, i) => {
+          ctx.beginPath();
+          ctx.strokeStyle = i === selectedIndex ? '#cc0000' : '#000000';
+          ctx.lineWidth = i === selectedIndex ? 2 : 1;
+          ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
+          ctx.stroke();
+          // draw small handle
+          ctx.beginPath();
+          ctx.fillStyle = i === selectedIndex ? '#cc0000' : '#000000';
+          ctx.arc(b.x, b.y, 3, 0, Math.PI * 2);
+          ctx.fill();
+        });
+      }
+      // Mouse interaction
+      let dragging = false;
+      let dragOffset = { x: 0, y: 0 };
+      canvas.addEventListener('mousedown', e => {
+        const rect = canvas.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
+        // Determine if clicking on a ball
+        let found = -1;
+        for (let i = balls.length - 1; i >= 0; i--) {
+          const b = balls[i];
+          const dx = x - b.x;
+          const dy = y - b.y;
+          if (Math.sqrt(dx * dx + dy * dy) <= b.r) {
+            found = i;
+            break;
+          }
+        }
+        selectedIndex = found;
+        updateBallList();
+        draw();
+        if (selectedIndex >= 0) {
+          const b = balls[selectedIndex];
+          dragging = true;
+          dragOffset.x = b.x - x;
+          dragOffset.y = b.y - y;
+        } else {
+          dragging = false;
+        }
+      });
+      window.addEventListener('mousemove', e => {
+        if (!dragging || selectedIndex < 0) return;
+        const rect = canvas.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
+        const b = balls[selectedIndex];
+        b.x = x + dragOffset.x;
+        b.y = y + dragOffset.y;
+        draw();
+        updateScad();
+      });
+      window.addEventListener('mouseup', e => {
+        dragging = false;
+      });
+      // Mouse wheel to change radius
+      canvas.addEventListener('wheel', e => {
+        if (selectedIndex >= 0) {
+          e.preventDefault();
+          const delta = e.deltaY;
+          const b = balls[selectedIndex];
+          // zoom in/out – negative delta -> enlarge
+          const factor = 1 + (delta > 0 ? -0.05 : 0.05);
+          b.r = Math.max(5, b.r * factor);
+          updateBallList();
+          draw();
+          updateScad();
+        }
+      }, { passive: false });
+      // Add ball button
+      addBtn.addEventListener('click', () => {
+        addBall();
+      });
+      // Remove button
+      removeBtn.addEventListener('click', () => {
+        removeSelected();
+      });
+      // Delete key to remove selected
+      window.addEventListener('keydown', e => {
+        if (e.key === 'Delete' && selectedIndex >= 0) {
+          removeSelected();
+        }
+      });
+      // Threshold change
+      thresholdInput.addEventListener('input', () => {
+        draw();
+        updateScad();
+      });
+      // Resolution change
+      resInput.addEventListener('input', () => {
+        draw();
+      });
+      // Add an initial ball for convenience
+      function init() {
+        resize();
+        addBall(canvas.width / 2 - 60, canvas.height / 2, Math.min(canvas.width, canvas.height) * 0.1);
+        addBall(canvas.width / 2 + 60, canvas.height / 2, Math.min(canvas.width, canvas.height) * 0.1);
+      }
+      window.addEventListener('load', init);
+    })();
+  </script>
+
+</body>
+
+</html>
