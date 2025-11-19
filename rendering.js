@@ -16,7 +16,7 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
       canvas.width = canvas.clientWidth;
       canvas.height = canvas.clientHeight;
     });
-    drawAll();
+    requestRender();
   }
 
   const viewState = {
@@ -116,6 +116,54 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
   }
 
   let axisBounds = computeAxisBounds();
+  const interactionState = {
+    fastMode: false,
+    fullQualityTimer: null
+  };
+
+  function currentResolution() {
+    const base = Math.max(10, parseInt(resolutionInput.value, 10) || 120);
+    return interactionState.fastMode ? Math.max(10, Math.round(base * 0.35)) : base;
+  }
+
+  function currentSamples(defaultSamples, fastSamples) {
+    return interactionState.fastMode ? fastSamples : defaultSamples;
+  }
+
+  function clearFullQualityTimer() {
+    if (interactionState.fullQualityTimer !== null) {
+      clearTimeout(interactionState.fullQualityTimer);
+      interactionState.fullQualityTimer = null;
+    }
+  }
+
+  function scheduleFullQualityRedraw() {
+    clearFullQualityTimer();
+    interactionState.fullQualityTimer = setTimeout(() => {
+      interactionState.fullQualityTimer = null;
+      interactionState.fastMode = false;
+      flushPendingRender();
+      renderInternal({ deferFullRedraw: true });
+    }, 150);
+  }
+
+  function beginFastRender() {
+    if (!interactionState.fastMode) {
+      interactionState.fastMode = true;
+    }
+    clearFullQualityTimer();
+  }
+
+  function endFastRender({ immediate = false } = {}) {
+    if (immediate) {
+      clearFullQualityTimer();
+      interactionState.fastMode = false;
+      flushPendingRender();
+      renderInternal({ deferFullRedraw: true });
+    } else {
+      scheduleFullQualityRedraw();
+    }
+  }
 
   function drawIsosurface(ctx, canvas, view, sampleToWorld) {
     const width = canvas.width;
@@ -123,14 +171,14 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
     if (!width || !height) return;
 
     const iso = parseFloat(thresholdInput.value) || 1;
-    const resolution = Math.max(10, parseInt(resolutionInput.value, 10) || 120);
+    const resolution = currentResolution();
     const stepX = width / resolution;
     const stepY = height / resolution;
     const imgData = ctx.createImageData(width, height);
     const data = imgData.data;
     const missingAxis = view === 'xy' ? 'z' : view === 'xz' ? 'y' : 'x';
     const { min: axisMin, max: axisMax } = axisBounds[missingAxis];
-    const samples = Math.max(5, Math.round(resolution * 0.25));
+    const samples = currentSamples(Math.max(5, Math.round(resolution * 0.25)), 1);
 
     for (let iy = 0; iy < resolution; iy++) {
       const sampleY = iy * stepY + stepY / 2;
@@ -333,12 +381,38 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
     });
   }
 
-  function drawAll() {
+  function renderInternal({ deferFullRedraw = false } = {}) {
     axisBounds = computeAxisBounds();
     drawXY();
     drawXZ();
     drawYZ();
     drawPreview3D();
+
+    if (interactionState.fastMode && !deferFullRedraw) {
+      scheduleFullQualityRedraw();
+    }
+  }
+
+  let pendingRender = null;
+  let pendingRenderOptions = null;
+
+  function flushPendingRender() {
+    if (pendingRender !== null) {
+      cancelAnimationFrame(pendingRender);
+      pendingRender = null;
+    }
+    pendingRenderOptions = null;
+  }
+
+  function requestRender(options = {}) {
+    pendingRenderOptions = options;
+    if (pendingRender !== null) return;
+    pendingRender = requestAnimationFrame(() => {
+      const opts = pendingRenderOptions || {};
+      pendingRenderOptions = null;
+      pendingRender = null;
+      renderInternal(opts);
+    });
   }
 
   function hitTest(view, px, py) {
@@ -379,7 +453,7 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
         state.offsetY -= dy / state.zoom;
       }
     });
-    drawAll();
+    requestRender();
   }
 
   function zoomViews(amount) {
@@ -389,12 +463,12 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
       if (!state) return;
       state.zoom = Math.min(5, Math.max(0.2, state.zoom * factor));
     });
-    drawAll();
+    requestRender();
   }
 
   return {
     resizeCanvases,
-    drawAll,
+    drawAll: requestRender,
     worldToScreenXY,
     screenToWorldXY,
     worldToScreenXZ,
@@ -406,6 +480,8 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
     adjustPreviewRotation,
     drawPreview3D,
     panViews,
-    zoomViews
+    zoomViews,
+    beginFastRender,
+    endFastRender
   };
 }

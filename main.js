@@ -142,6 +142,7 @@ function handlePointerDown(view, canvas, event) {
 
   dragState.active = true;
   dragState.view = view;
+  renderer.beginFastRender();
 
   const ball = editorState.balls[hitIndex];
   if (view === 'xy') {
@@ -189,6 +190,9 @@ function handlePointerMove(event) {
 }
 
 function stopDragging() {
+  if (dragState.active) {
+    renderer.endFastRender({ immediate: true });
+  }
   dragState.active = false;
   dragState.view = null;
 }
@@ -197,6 +201,7 @@ function startCameraPan(event) {
   cameraPanState.active = true;
   cameraPanState.lastX = event.clientX;
   cameraPanState.lastY = event.clientY;
+  renderer.beginFastRender();
   event.preventDefault();
 }
 
@@ -211,6 +216,9 @@ function handleCameraPanMove(event) {
 }
 
 function stopCameraPan() {
+  if (cameraPanState.active) {
+    renderer.endFastRender({ immediate: true });
+  }
   cameraPanState.active = false;
 }
 
@@ -236,19 +244,25 @@ function stopPreviewDrag() {
 }
 
 function handleWheel(event) {
+  renderer.beginFastRender();
   if (editorState.selectedIndex < 0) {
     event.preventDefault();
     renderer.zoomViews(event.deltaY);
+    renderer.endFastRender();
     return;
   }
   event.preventDefault();
   const ball = getSelectedBall();
-  if (!ball) return;
+  if (!ball) {
+    renderer.endFastRender();
+    return;
+  }
   const delta = event.deltaY;
   const factor = 1 + (delta > 0 ? -0.05 : 0.05);
   ball.r = Math.max(5, ball.r * factor);
   updateBallList();
   renderer.drawAll();
+  renderer.endFastRender();
   updateScad();
 }
 
