@@ -1,0 +1,118 @@
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+  font-family: sans-serif;
+  background-color: #f2f2f2;
+}
+
+#container {
+  display: flex;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+}
+
+#viewContainer {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 2fr 1fr;
+  grid-template-rows: 2fr 1fr;
+  grid-template-areas:
+    "xy yz"
+    "xz yz";
+  gap: 0;
+  background: #ddd;
+}
+
+canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: #fff;
+}
+
+#xyCanvas {
+  grid-area: xy;
+  border-right: 1px solid #ccc;
+  border-bottom: 1px solid #ccc;
+}
+
+#xzCanvas {
+  grid-area: xz;
+  border-right: 1px solid #ccc;
+  border-top: 1px solid #ccc;
+}
+
+#yzCanvas {
+  grid-area: yz;
+  border-left: 1px solid #ccc;
+}
+
+#sidebar {
+  width: 320px;
+  height: 100%;
+  box-sizing: border-box;
+  padding: 1em;
+  background: #fafafa;
+  overflow-y: auto;
+}
+
+h1 {
+  font-size: 1.4em;
+  margin-top: 0;
+}
+
+h2 {
+  font-size: 1.2em;
+  margin-bottom: 0.2em;
+}
+
+.ball-entry {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.25em 0;
+  border-bottom: 1px solid #e0e0e0;
+}
+
+.ball-entry span {
+  flex-grow: 1;
+}
+
+button {
+  margin: 0.25em 0;
+  padding: 0.3em 0.6em;
+  background: #007acc;
+  color: white;
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+input[type="number"] {
+  width: 80px;
+}
+
+#scadcode {
+  width: 100%;
+  height: 200px;
+  box-sizing: border-box;
+  font-family: monospace;
+  resize: vertical;
+  margin-top: 0.5em;
+}
+
+.hint {
+  font-size: 0.85em;
+  color: #555;
+  margin-top: 0.5em;
+}
