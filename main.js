@@ -3,17 +3,29 @@ import { createRenderer } from './rendering.js';
 import { renderBallList } from './ballList.js';
 import { buildScadCode, parseScadCode } from './scad.js';
 
+const viewContainer = document.getElementById('viewContainer');
 const xyCanvas = document.getElementById('xyCanvas');
 const xzCanvas = document.getElementById('xzCanvas');
 const yzCanvas = document.getElementById('yzCanvas');
 const previewCanvas = document.getElementById('preview3D');
 const ballList = document.getElementById('ballList');
 const addBtn = document.getElementById('addBtn');
+const duplicateBtn = document.getElementById('duplicateBtn');
+const splitBtn = document.getElementById('splitBtn');
 const removeBtn = document.getElementById('removeBtn');
 const thresholdInput = document.getElementById('threshold');
 const resolutionInput = document.getElementById('res');
 const scadTextarea = document.getElementById('scadcode');
 const importBtn = document.getElementById('importBtn');
+const contextMenu = document.getElementById('contextMenu');
+const contextMenuButtons = contextMenu
+  ? {
+      add: contextMenu.querySelector('[data-action="add"]'),
+      duplicate: contextMenu.querySelector('[data-action="duplicate"]'),
+      split: contextMenu.querySelector('[data-action="split"]'),
+      remove: contextMenu.querySelector('[data-action="remove"]')
+    }
+  : null;
 
 const renderer = createRenderer({
   xyCanvas,
@@ -42,6 +54,12 @@ const previewDragState = {
   lastY: 0
 };
 
+const contextState = {
+  view: null,
+  px: 0,
+  py: 0
+};
+
 function updateBallList() {
   renderBallList({
     container: ballList,
@@ -52,6 +70,7 @@ function updateBallList() {
     onNameChange: handleNameChange,
     removeButton: removeBtn
   });
+  updateActionButtons();
 }
 
 function updateScad() {
@@ -86,6 +105,51 @@ function importFromScadText(scadText) {
 
 function addNewBall(x, y, z, r) {
   addBall({ x, y, z, r }, renderer.getDefaultRadius());
+  updateBallList();
+  updateScad();
+  renderer.drawAll();
+}
+
+function duplicateSelectedBall() {
+  const ball = getSelectedBall();
+  if (!ball) return;
+  const jitter = Math.max(10, renderer.getDefaultRadius() * 0.2);
+  const newBall = {
+    x: ball.x + jitter,
+    y: ball.y + jitter * 0.3,
+    z: ball.z,
+    r: ball.r,
+    name: `${ball.name || 'Ball'} copy`
+  };
+  addBall(newBall, renderer.getDefaultRadius());
+  updateBallList();
+  updateScad();
+  renderer.drawAll();
+}
+
+function splitSelectedBall() {
+  if (editorState.selectedIndex < 0) return;
+  const original = editorState.balls[editorState.selectedIndex];
+  if (!original) return;
+  const halfRadius = original.r / 2;
+  const gap = Math.max(halfRadius * 0.8, 5);
+  const baseName = original.name || `Ball ${editorState.selectedIndex + 1}`;
+  const parts = [
+    {
+      ...original,
+      x: original.x - gap / 2,
+      r: halfRadius,
+      name: `${baseName} A`
+    },
+    {
+      ...original,
+      x: original.x + gap / 2,
+      r: halfRadius,
+      name: `${baseName} B`
+    }
+  ];
+  editorState.balls.splice(editorState.selectedIndex, 1, ...parts);
+  editorState.selectedIndex = Math.min(editorState.selectedIndex, editorState.balls.length - 1);
   updateBallList();
   updateScad();
   renderer.drawAll();
@@ -243,6 +307,26 @@ function stopPreviewDrag() {
   previewDragState.active = false;
 }
 
+function addBallFromContext() {
+  if (!contextState.view) {
+    addNewBall();
+    return;
+  }
+
+  if (contextState.view === 'xy') {
+    const { x, y } = renderer.screenToWorldXY(contextState.px, contextState.py);
+    addNewBall(x, y, 0);
+  } else if (contextState.view === 'xz') {
+    const { x, z } = renderer.screenToWorldXZ(contextState.px, contextState.py);
+    addNewBall(x, 0, z);
+  } else if (contextState.view === 'yz') {
+    const { y, z } = renderer.screenToWorldYZ(contextState.px, contextState.py);
+    addNewBall(0, y, z);
+  } else {
+    addNewBall();
+  }
+}
+
 function handleWheel(event) {
   renderer.beginFastRender();
   if (editorState.selectedIndex < 0) {
@@ -273,11 +357,91 @@ function init() {
   addNewBall(60, 0, 0, defaultRadius);
 }
 
+function updateActionButtons() {
+  const hasSelection = editorState.selectedIndex >= 0;
+  duplicateBtn.disabled = !hasSelection;
+  splitBtn.disabled = !hasSelection;
+  removeBtn.disabled = !hasSelection;
+  updateContextMenuState();
+}
+
+function updateContextMenuState() {
+  if (!contextMenuButtons) return;
+  const hasSelection = editorState.selectedIndex >= 0;
+  contextMenuButtons.duplicate.disabled = !hasSelection;
+  contextMenuButtons.split.disabled = !hasSelection;
+  contextMenuButtons.remove.disabled = !hasSelection;
+}
+
+function hideContextMenu() {
+  if (!contextMenu) return;
+  contextMenu.classList.add('hidden');
+  contextState.view = null;
+  contextState.px = 0;
+  contextState.py = 0;
+}
+
+function showContextMenu(pageX, pageY) {
+  if (!contextMenu) return;
+  contextMenu.style.left = '0px';
+  contextMenu.style.top = '0px';
+  contextMenu.classList.remove('hidden');
+  const rect = contextMenu.getBoundingClientRect();
+  const scrollX = window.scrollX || 0;
+  const scrollY = window.scrollY || 0;
+  let x = pageX;
+  let y = pageY;
+  if (x + rect.width > scrollX + window.innerWidth) {
+    x = scrollX + window.innerWidth - rect.width - 4;
+  }
+  if (y + rect.height > scrollY + window.innerHeight) {
+    y = scrollY + window.innerHeight - rect.height - 4;
+  }
+  contextMenu.style.left = `${Math.max(scrollX, x)}px`;
+  contextMenu.style.top = `${Math.max(scrollY, y)}px`;
+  updateContextMenuState();
+}
+
+function handleViewContextMenu(event) {
+  const target = event.target;
+  if (!(target instanceof HTMLCanvasElement)) return;
+  if (target === previewCanvas) return;
+  event.preventDefault();
+
+  let view = null;
+  if (target === xyCanvas) view = 'xy';
+  else if (target === xzCanvas) view = 'xz';
+  else if (target === yzCanvas) view = 'yz';
+
+  contextState.view = view;
+  contextState.px = 0;
+  contextState.py = 0;
+
+  if (view) {
+    const { px, py } = pointerPosition(target, event);
+    contextState.px = px;
+    contextState.py = py;
+    const hitIndex = renderer.hitTest(view, px, py);
+    if (hitIndex !== editorState.selectedIndex) {
+      setSelectedIndex(hitIndex);
+      updateBallList();
+      renderer.drawAll();
+    }
+  }
+
+  showContextMenu(event.pageX, event.pageY);
+}
+
 addBtn.addEventListener('click', () => addNewBall());
+duplicateBtn.addEventListener('click', duplicateSelectedBall);
+splitBtn.addEventListener('click', splitSelectedBall);
 removeBtn.addEventListener('click', handleRemoval);
 window.addEventListener('keydown', event => {
   if (event.key === 'Delete' && editorState.selectedIndex >= 0) {
     handleRemoval();
+  }
+  if (event.key === 'Escape') {
+    hideContextMenu();
   }
 });
 
@@ -301,6 +465,7 @@ if (importBtn) {
 xyCanvas.addEventListener('mousedown', event => handlePointerDown('xy', xyCanvas, event));
 xzCanvas.addEventListener('mousedown', event => handlePointerDown('xz', xzCanvas, event));
 yzCanvas.addEventListener('mousedown', event => handlePointerDown('yz', yzCanvas, event));
+viewContainer.addEventListener('contextmenu', handleViewContextMenu);
 if (previewCanvas) {
   previewCanvas.addEventListener('mousedown', handlePreviewPointerDown);
 }
@@ -341,3 +506,30 @@ window.addEventListener('drop', event => {
   };
   reader.readAsText(file);
 });
+
+if (contextMenu) {
+  contextMenu.addEventListener('click', event => {
+    const button = event.target.closest('button[data-action]');
+    if (!button) return;
+    const action = button.dataset.action;
+    hideContextMenu();
+    if (action === 'add') {
+      addBallFromContext();
+    } else if (action === 'duplicate') {
+      duplicateSelectedBall();
+    } else if (action === 'split') {
+      splitSelectedBall();
+    } else if (action === 'remove') {
+      handleRemoval();
+    }
+  });
+
+  window.addEventListener('mousedown', event => {
+    if (!contextMenu.contains(event.target)) {
+      hideContextMenu();
+    }
+  });
+
+  window.addEventListener('resize', hideContextMenu);
+  window.addEventListener('scroll', hideContextMenu, true);
+}

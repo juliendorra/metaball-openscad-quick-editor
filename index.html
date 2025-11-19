@@ -45,8 +45,12 @@
 
       <h2>Metaballs</h2>
       <div id="ballList"></div>
-      <button id="addBtn">Add Ball</button>
-      <button id="removeBtn" disabled>Remove Selected</button>
+      <div class="ball-actions">
+        <button id="addBtn">Add Ball</button>
+        <button id="duplicateBtn" disabled>Duplicate</button>
+        <button id="splitBtn" disabled>Split</button>
+        <button id="removeBtn" disabled>Remove Selected</button>
+      </div>
       <div class="hint">
         You can also press the <code>Delete</code> key to remove the selected ball.
       </div>
@@ -71,6 +75,13 @@
         previously generated code here and click "Import", or drop a .scad file anywhere in the window to load it.
       </div>
     </div>
+  </div>
+
+  <div id="contextMenu" class="context-menu hidden">
+    <button data-action="add">Add Ball</button>
+    <button data-action="duplicate">Duplicate Ball</button>
+    <button data-action="split">Split Ball</button>
+    <button data-action="remove">Remove Ball</button>
   </div>
 
   <script type="module" src="main.js"></script>

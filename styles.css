@@ -101,6 +101,18 @@ h2 {
   padding: 0.2em 0.4em;
 }
 
+.ball-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4em;
+  margin: 0.5em 0;
+}
+
+.ball-actions button {
+  flex: 1;
+  min-width: 140px;
+}
+
 button {
   margin: 0.25em 0;
   padding: 0.3em 0.6em;
@@ -122,6 +134,42 @@ input[type="number"] {
 
 .ball-entry input[type="number"] {
   width: 70px;
+}
+
+#contextMenu {
+  position: absolute;
+  min-width: 180px;
+  background: #eef5ff;
+  border: 1px solid #8cb3e6;
+  border-radius: 4px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  padding: 0.2em 0;
+  z-index: 2000;
+}
+
+#contextMenu button {
+  display: block;
+  width: 100%;
+  padding: 0.4em 0.8em;
+  background: transparent;
+  color: #0a2a52;
+  border: none;
+  text-align: left;
+  cursor: pointer;
+}
+
+#contextMenu button:hover:not(:disabled) {
+  background: #cfe2ff;
+  color: #002b72;
+}
+
+#contextMenu button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.hidden {
+  display: none !important;
 }
 
 #scadcode {
