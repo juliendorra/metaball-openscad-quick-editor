@@ -79,10 +79,13 @@ h2 {
   align-items: center;
   padding: 0.25em 0;
   border-bottom: 1px solid #e0e0e0;
+  gap: 0.4em;
 }
 
-.ball-entry span {
-  flex-grow: 1;
+.ball-entry .ball-name-input {
+  flex: 1;
+  min-width: 0;
+  padding: 0.2em 0.4em;
 }
 
 button {
@@ -102,6 +105,10 @@ button:disabled {
 
 input[type="number"] {
   width: 80px;
+}
+
+.ball-entry input[type="number"] {
+  width: 70px;
 }
 
 #scadcode {

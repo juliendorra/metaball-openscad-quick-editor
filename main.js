@@ -34,6 +34,7 @@ function updateBallList() {
     selectedIndex: editorState.selectedIndex,
     onSelect: handleBallSelect,
     onRadiusChange: handleRadiusChange,
+    onNameChange: handleNameChange,
     removeButton: removeBtn
   });
 }
@@ -59,6 +60,13 @@ function handleBallSelect(index) {
 function handleRadiusChange(index, radius) {
   editorState.balls[index].r = radius;
   renderer.drawAll();
+  updateScad();
+}
+
+function handleNameChange(index, name) {
+  const ball = editorState.balls[index];
+  if (!ball) return;
+  ball.name = name;
   updateScad();
 }
 

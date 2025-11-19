@@ -10,7 +10,7 @@ export function buildScadCode(balls, threshold) {
   let sumRadius = 0;
   let maxRadius = 0;
 
-  balls.forEach(ball => {
+  balls.forEach((ball, index) => {
     const { x, y, z, r } = ball;
     sumRadius += r;
     maxRadius = Math.max(maxRadius, r);
@@ -22,8 +22,11 @@ export function buildScadCode(balls, threshold) {
     minZ = Math.min(minZ, z - r);
     maxZ = Math.max(maxZ, z + r);
 
+    const fallbackName = `Ball ${index + 1}`;
+    const label = typeof ball.name === 'string' && ball.name.trim() ? ball.name.trim() : fallbackName;
+    const safeLabel = label.replace(/\r?\n/g, ' ');
     specEntries.push(
-      `    move([${x.toFixed(2)}, ${y.toFixed(2)}, ${z.toFixed(2)}]), mb_sphere(${r.toFixed(2)})`
+      `    // ${safeLabel}\n    move([${x.toFixed(2)}, ${y.toFixed(2)}, ${z.toFixed(2)}]), mb_sphere(${r.toFixed(2)})`
     );
   });
 

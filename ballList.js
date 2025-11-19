@@ -4,6 +4,7 @@ export function renderBallList({
   selectedIndex,
   onSelect,
   onRadiusChange,
+  onNameChange,
   removeButton
 }) {
   container.innerHTML = '';
@@ -15,9 +16,16 @@ export function renderBallList({
       entry.style.background = '#e0f0ff';
     }
 
-    const label = document.createElement('span');
-    label.textContent = `Ball ${index + 1}`;
-    entry.appendChild(label);
+    const nameInput = document.createElement('input');
+    nameInput.type = 'text';
+    nameInput.className = 'ball-name-input';
+    nameInput.placeholder = `Ball ${index + 1}`;
+    nameInput.value = ball.name || '';
+    nameInput.title = 'Metaball name';
+    nameInput.addEventListener('input', event => {
+      onNameChange?.(index, event.target.value);
+    });
+    entry.appendChild(nameInput);
 
     const radiusInput = document.createElement('input');
     radiusInput.type = 'number';
