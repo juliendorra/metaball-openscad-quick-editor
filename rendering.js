@@ -1,12 +1,18 @@
 import { editorState } from './state.js';
 
-export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, thresholdInput, resolutionInput }) {
+export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, thresholdInput, resolutionInput }) {
   const xyCtx = xyCanvas.getContext('2d');
   const xzCtx = xzCanvas.getContext('2d');
   const yzCtx = yzCanvas.getContext('2d');
+  const previewCtx = previewCanvas ? previewCanvas.getContext('2d') : null;
+  const previewRotation = {
+    yaw: Math.PI / 6,
+    pitch: -Math.PI / 6
+  };
 
   function resizeCanvases() {
-    [xyCanvas, xzCanvas, yzCanvas].forEach(canvas => {
+    [xyCanvas, xzCanvas, yzCanvas, previewCanvas].forEach(canvas => {
+      if (!canvas) return;
       canvas.width = canvas.clientWidth;
       canvas.height = canvas.clientHeight;
     });
@@ -116,6 +122,92 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, thresholdInput, r
     ctx.putImageData(imgData, 0, 0);
   }
 
+  function getSceneExtent() {
+    if (!editorState.balls.length) return 100;
+    let maxExtent = 0;
+    for (const ball of editorState.balls) {
+      const extent = Math.max(Math.abs(ball.x), Math.abs(ball.y), Math.abs(ball.z)) + ball.r;
+      if (extent > maxExtent) maxExtent = extent;
+    }
+    return Math.max(maxExtent, 10);
+  }
+
+  function rotatePoint(x, y, z) {
+    const cosYaw = Math.cos(previewRotation.yaw);
+    const sinYaw = Math.sin(previewRotation.yaw);
+    const cosPitch = Math.cos(previewRotation.pitch);
+    const sinPitch = Math.sin(previewRotation.pitch);
+
+    const x1 = x * cosYaw + z * sinYaw;
+    const z1 = -x * sinYaw + z * cosYaw;
+    const y1 = y * cosPitch - z1 * sinPitch;
+    const z2 = y * sinPitch + z1 * cosPitch;
+    return { x: x1, y: y1, z: z2 };
+  }
+
+  function drawPreview3D() {
+    if (!previewCtx || !previewCanvas) return;
+    const width = previewCanvas.width;
+    const height = previewCanvas.height;
+    if (!width || !height) return;
+    previewCtx.clearRect(0, 0, width, height);
+
+    const extent = getSceneExtent();
+    const scale = (Math.min(width, height) * 0.4) / extent;
+    const cameraDistance = extent * 3;
+    const halfWidth = width / 2;
+    const halfHeight = height / 2;
+
+    const spheres = editorState.balls.map((ball, index) => {
+      const rotated = rotatePoint(ball.x, ball.y, ball.z);
+      const denom = cameraDistance - rotated.z;
+      if (denom <= 10) return null;
+      const perspective = cameraDistance / denom;
+      const radius = ball.r * scale * perspective;
+      if (!Number.isFinite(radius) || radius <= 0.5) return null;
+      return {
+        px: halfWidth + rotated.x * scale * perspective,
+        py: halfHeight - rotated.y * scale * perspective,
+        radius,
+        depth: rotated.z,
+        index
+      };
+    }).filter(Boolean);
+
+    spheres.sort((a, b) => a.depth - b.depth);
+
+    spheres.forEach(sphere => {
+      const gradient = previewCtx.createRadialGradient(
+        sphere.px - sphere.radius * 0.3,
+        sphere.py - sphere.radius * 0.3,
+        sphere.radius * 0.1,
+        sphere.px,
+        sphere.py,
+        sphere.radius
+      );
+      gradient.addColorStop(0, 'rgba(120, 150, 190, 0.9)');
+      gradient.addColorStop(1, 'rgba(70, 110, 150, 0.8)');
+      previewCtx.fillStyle = gradient;
+      previewCtx.beginPath();
+      previewCtx.arc(sphere.px, sphere.py, sphere.radius, 0, Math.PI * 2);
+      previewCtx.fill();
+
+      previewCtx.lineWidth = sphere.index === editorState.selectedIndex ? 2 : 1;
+      previewCtx.strokeStyle = sphere.index === editorState.selectedIndex ? '#cc0000' : '#1f2f3f';
+      previewCtx.beginPath();
+      previewCtx.arc(sphere.px, sphere.py, sphere.radius, 0, Math.PI * 2);
+      previewCtx.stroke();
+    });
+  }
+
+  function adjustPreviewRotation(deltaX, deltaY) {
+    previewRotation.yaw += deltaX * 0.01;
+    previewRotation.pitch += deltaY * 0.01;
+    const limit = Math.PI / 2 - 0.1;
+    previewRotation.pitch = Math.max(-limit, Math.min(limit, previewRotation.pitch));
+    drawPreview3D();
+  }
+
   function drawXY() {
     drawIsosurface(xyCtx, xyCanvas, 'xy', (sampleX, sampleY) => screenToWorldXY(sampleX, sampleY));
 
@@ -174,6 +266,7 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, thresholdInput, r
     drawXY();
     drawXZ();
     drawYZ();
+    drawPreview3D();
   }
 
   function hitTest(view, px, py) {
@@ -213,6 +306,8 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, thresholdInput, r
     worldToScreenYZ,
     screenToWorldYZ,
     hitTest,
-    getDefaultRadius
+    getDefaultRadius,
+    adjustPreviewRotation,
+    drawPreview3D
   };
 }

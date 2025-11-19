@@ -28,6 +28,7 @@
       <canvas id="xyCanvas"></canvas>
       <canvas id="xzCanvas"></canvas>
       <canvas id="yzCanvas"></canvas>
+      <canvas id="preview3D"></canvas>
     </div>
 
     <div id="sidebar">
@@ -63,9 +64,11 @@
       </div>
 
       <h2>Generated OpenSCAD</h2>
-      <textarea id="scadcode" readonly></textarea>
+      <textarea id="scadcode"></textarea>
+      <button id="importBtn" type="button">Import from SCAD</button>
       <div class="hint">
-        Copy this code into OpenSCAD (with the BOSL2 library installed) to render your metaballs.
+        Copy this code into OpenSCAD (with the BOSL2 library installed) to render your metaballs. You can also paste
+        previously generated code here and click "Import", or drop a .scad file anywhere in the window to load it.
       </div>
     </div>
   </div>

@@ -20,10 +20,10 @@ body {
   flex: 1;
   display: grid;
   grid-template-columns: 2fr 1fr;
-  grid-template-rows: 2fr 1fr;
+  grid-template-rows: 1fr 1fr;
   grid-template-areas:
     "xy yz"
-    "xz yz";
+    "xz preview3d";
   gap: 0;
   background: #ddd;
 }
@@ -52,6 +52,19 @@ canvas {
 #yzCanvas {
   grid-area: yz;
   border-left: 1px solid #ccc;
+  border-bottom: 1px solid #ccc;
+}
+
+#preview3D {
+  grid-area: preview3d;
+  border-left: 1px solid #ccc;
+  border-top: 1px solid #ccc;
+  background: #f7f7f7;
+  cursor: grab;
+}
+
+#preview3D:active {
+  cursor: grabbing;
 }
 
 #sidebar {

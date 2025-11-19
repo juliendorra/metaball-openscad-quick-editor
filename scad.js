@@ -97,3 +97,38 @@ export function buildScadCode(balls, threshold) {
 
   return code;
 }
+
+export function parseScadCode(text) {
+  if (typeof text !== 'string') return null;
+  const balls = [];
+  const specMatch = text.match(/spec\s*=\s*\[(.*?)\];/is);
+  if (specMatch) {
+    const body = specMatch[1];
+    const entryRegex = /(\/\/[^\n\r]*\s*)?move\(\[([^\]]+)\]\)\s*,\s*mb_sphere\(([^)]+)\)/gi;
+    let match;
+    let entryIndex = 0;
+    while ((match = entryRegex.exec(body))) {
+      entryIndex += 1;
+      const comment = match[1] || '';
+      const coords = match[2].split(',').map(part => parseFloat(part));
+      const radius = parseFloat(match[3]);
+      if (coords.length < 3 || coords.some(n => !Number.isFinite(n)) || !Number.isFinite(radius)) continue;
+      const name = comment.replace('//', '').trim();
+      balls.push({
+        x: coords[0],
+        y: coords[1],
+        z: coords[2],
+        r: Math.max(1, radius),
+        name: name || `Ball ${entryIndex}`
+      });
+    }
+  }
+
+  const isoMatch = text.match(/isovalue\s*=\s*([^;]+)/i);
+  const threshold = isoMatch ? parseFloat(isoMatch[1]) : null;
+
+  return {
+    balls,
+    threshold: Number.isFinite(threshold) ? threshold : null
+  };
+}
