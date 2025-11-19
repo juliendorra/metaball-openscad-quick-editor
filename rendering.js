@@ -73,27 +73,49 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
     };
   }
 
-  function fieldAtSlice(view, coords) {
+  function fieldAt(wx, wy, wz) {
     let value = 0;
     for (const ball of editorState.balls) {
-      let dist;
-      if (view === 'xy') {
-        const dx = coords.x - ball.x;
-        const dy = coords.y - ball.y;
-        dist = Math.hypot(dx, dy);
-      } else if (view === 'xz') {
-        const dx = coords.x - ball.x;
-        const dz = coords.z - ball.z;
-        dist = Math.hypot(dx, dz);
-      } else {
-        const dy = coords.y - ball.y;
-        const dz = coords.z - ball.z;
-        dist = Math.hypot(dy, dz);
-      }
+      const dx = wx - ball.x;
+      const dy = wy - ball.y;
+      const dz = wz - ball.z;
+      const dist = Math.hypot(dx, dy, dz);
       value += dist === 0 ? 1e9 : ball.r / dist;
     }
     return value;
   }
+
+  function computeAxisBounds() {
+    if (!editorState.balls.length) {
+      return {
+        x: { min: -100, max: 100 },
+        y: { min: -100, max: 100 },
+        z: { min: -100, max: 100 }
+      };
+    }
+    let minX = Infinity;
+    let minY = Infinity;
+    let minZ = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    let maxZ = -Infinity;
+    editorState.balls.forEach(ball => {
+      minX = Math.min(minX, ball.x - ball.r);
+      maxX = Math.max(maxX, ball.x + ball.r);
+      minY = Math.min(minY, ball.y - ball.r);
+      maxY = Math.max(maxY, ball.y + ball.r);
+      minZ = Math.min(minZ, ball.z - ball.r);
+      maxZ = Math.max(maxZ, ball.z + ball.r);
+    });
+    const pad = 20;
+    return {
+      x: { min: minX - pad, max: maxX + pad },
+      y: { min: minY - pad, max: maxY + pad },
+      z: { min: minZ - pad, max: maxZ + pad }
+    };
+  }
+
+  let axisBounds = computeAxisBounds();
 
   function drawIsosurface(ctx, canvas, view, sampleToWorld) {
     const width = canvas.width;
@@ -106,13 +128,44 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
     const stepY = height / resolution;
     const imgData = ctx.createImageData(width, height);
     const data = imgData.data;
+    const missingAxis = view === 'xy' ? 'z' : view === 'xz' ? 'y' : 'x';
+    const { min: axisMin, max: axisMax } = axisBounds[missingAxis];
+    const samples = Math.max(5, Math.round(resolution * 0.25));
 
     for (let iy = 0; iy < resolution; iy++) {
       const sampleY = iy * stepY + stepY / 2;
       for (let ix = 0; ix < resolution; ix++) {
         const sampleX = ix * stepX + stepX / 2;
         const coords = sampleToWorld(sampleX, sampleY);
-        if (fieldAtSlice(view, coords) < iso) continue;
+        let exceedsIso = false;
+        for (let si = 0; si < samples; si++) {
+          const t = samples === 1 ? 0.5 : si / (samples - 1);
+          const axisValue = axisMin + t * (axisMax - axisMin);
+          let wx;
+          let wy;
+          let wz;
+
+          if (view === 'xy') {
+            wx = coords.x;
+            wy = coords.y;
+            wz = axisValue;
+          } else if (view === 'xz') {
+            wx = coords.x;
+            wy = axisValue;
+            wz = coords.z;
+          } else {
+            wx = axisValue;
+            wy = coords.y;
+            wz = coords.z;
+          }
+
+          if (fieldAt(wx, wy, wz) >= iso) {
+            exceedsIso = true;
+            break;
+          }
+        }
+
+        if (!exceedsIso) continue;
 
         const startX = Math.floor(ix * stepX);
         const startY = Math.floor(iy * stepY);
@@ -281,6 +334,7 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
   }
 
   function drawAll() {
+    axisBounds = computeAxisBounds();
     drawXY();
     drawXZ();
     drawYZ();
