@@ -30,6 +30,12 @@ const dragState = {
   offset: { dx: 0, dy: 0, dz: 0 }
 };
 
+const cameraPanState = {
+  active: false,
+  lastX: 0,
+  lastY: 0
+};
+
 const previewDragState = {
   active: false,
   lastX: 0,
@@ -128,6 +134,9 @@ function handlePointerDown(view, canvas, event) {
 
   if (hitIndex < 0) {
     dragState.active = false;
+    if (editorState.selectedIndex < 0) {
+      startCameraPan(event);
+    }
     return;
   }
 
@@ -154,6 +163,7 @@ function handlePointerDown(view, canvas, event) {
 }
 
 function handlePointerMove(event) {
+  if (handleCameraPanMove(event)) return;
   if (!dragState.active || editorState.selectedIndex < 0) return;
   const ball = editorState.balls[editorState.selectedIndex];
 
@@ -183,6 +193,27 @@ function stopDragging() {
   dragState.view = null;
 }
 
+function startCameraPan(event) {
+  cameraPanState.active = true;
+  cameraPanState.lastX = event.clientX;
+  cameraPanState.lastY = event.clientY;
+  event.preventDefault();
+}
+
+function handleCameraPanMove(event) {
+  if (!cameraPanState.active) return false;
+  const dx = event.clientX - cameraPanState.lastX;
+  const dy = event.clientY - cameraPanState.lastY;
+  cameraPanState.lastX = event.clientX;
+  cameraPanState.lastY = event.clientY;
+  renderer.panViews(dx, dy);
+  return true;
+}
+
+function stopCameraPan() {
+  cameraPanState.active = false;
+}
+
 function handlePreviewPointerDown(event) {
   if (!previewCanvas) return;
   previewDragState.active = true;
@@ -205,7 +236,11 @@ function stopPreviewDrag() {
 }
 
 function handleWheel(event) {
-  if (editorState.selectedIndex < 0) return;
+  if (editorState.selectedIndex < 0) {
+    event.preventDefault();
+    renderer.zoomViews(event.deltaY);
+    return;
+  }
   event.preventDefault();
   const ball = getSelectedBall();
   if (!ball) return;
@@ -262,6 +297,7 @@ window.addEventListener('mousemove', event => {
 });
 window.addEventListener('mouseup', () => {
   stopDragging();
+  stopCameraPan();
   stopPreviewDrag();
 });
 

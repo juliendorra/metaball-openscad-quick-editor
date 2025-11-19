@@ -19,45 +19,57 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
     drawAll();
   }
 
+  const viewState = {
+    xy: { offsetX: 0, offsetY: 0, zoom: 1 },
+    xz: { offsetX: 0, offsetY: 0, zoom: 1 },
+    yz: { offsetX: 0, offsetY: 0, zoom: 1 }
+  };
+
   function worldToScreenXY(x, y) {
+    const { offsetX, offsetY, zoom } = viewState.xy;
     return {
-      px: x + xyCanvas.width / 2,
-      py: xyCanvas.height / 2 - y
+      px: (x + offsetX) * zoom + xyCanvas.width / 2,
+      py: xyCanvas.height / 2 - (y + offsetY) * zoom
     };
   }
 
   function screenToWorldXY(px, py) {
+    const { offsetX, offsetY, zoom } = viewState.xy;
     return {
-      x: px - xyCanvas.width / 2,
-      y: xyCanvas.height / 2 - py
+      x: (px - xyCanvas.width / 2) / zoom - offsetX,
+      y: (xyCanvas.height / 2 - py) / zoom - offsetY
     };
   }
 
   function worldToScreenXZ(x, z) {
+    const { offsetX, offsetY, zoom } = viewState.xz;
     return {
-      px: x + xzCanvas.width / 2,
-      py: xzCanvas.height / 2 - z
+      px: (x + offsetX) * zoom + xzCanvas.width / 2,
+      py: xzCanvas.height / 2 - (z + offsetY) * zoom
     };
   }
 
   function screenToWorldXZ(px, py) {
+    const { offsetX, offsetY, zoom } = viewState.xz;
     return {
-      x: px - xzCanvas.width / 2,
-      z: xzCanvas.height / 2 - py
+      x: (px - xzCanvas.width / 2) / zoom - offsetX,
+      z: (xzCanvas.height / 2 - py) / zoom - offsetY
     };
   }
 
   function worldToScreenYZ(y, z) {
+    const { offsetX, offsetY, zoom } = viewState.yz;
     return {
-      px: z + yzCanvas.width / 2,
-      py: yzCanvas.height / 2 - y
+      px: (z + offsetX) * zoom + yzCanvas.width / 2,
+      py: yzCanvas.height / 2 - (y + offsetY) * zoom
     };
   }
 
   function screenToWorldYZ(px, py) {
+    const { offsetX, offsetY, zoom } = viewState.yz;
     return {
-      y: yzCanvas.height / 2 - py,
-      z: px - yzCanvas.width / 2
+      y: (yzCanvas.height / 2 - py) / zoom - offsetY,
+      z: (px - yzCanvas.width / 2) / zoom - offsetX
     };
   }
 
@@ -211,12 +223,14 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
   function drawXY() {
     drawIsosurface(xyCtx, xyCanvas, 'xy', (sampleX, sampleY) => screenToWorldXY(sampleX, sampleY));
 
+    const zoom = viewState.xy.zoom;
     editorState.balls.forEach((ball, index) => {
       const { px, py } = worldToScreenXY(ball.x, ball.y);
+      const radiusPx = Math.max(1, ball.r * zoom);
       xyCtx.beginPath();
       xyCtx.strokeStyle = index === editorState.selectedIndex ? '#cc0000' : '#000000';
       xyCtx.lineWidth = index === editorState.selectedIndex ? 2 : 1;
-      xyCtx.arc(px, py, ball.r, 0, Math.PI * 2);
+      xyCtx.arc(px, py, radiusPx, 0, Math.PI * 2);
       xyCtx.stroke();
 
       xyCtx.beginPath();
@@ -229,12 +243,14 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
   function drawXZ() {
     drawIsosurface(xzCtx, xzCanvas, 'xz', (sampleX, sampleY) => screenToWorldXZ(sampleX, sampleY));
 
+    const zoom = viewState.xz.zoom;
     editorState.balls.forEach((ball, index) => {
       const { px, py } = worldToScreenXZ(ball.x, ball.z);
+      const radiusPx = Math.max(1, ball.r * zoom);
       xzCtx.beginPath();
       xzCtx.strokeStyle = index === editorState.selectedIndex ? '#cc0000' : '#000000';
       xzCtx.lineWidth = index === editorState.selectedIndex ? 2 : 1;
-      xzCtx.arc(px, py, ball.r, 0, Math.PI * 2);
+      xzCtx.arc(px, py, radiusPx, 0, Math.PI * 2);
       xzCtx.stroke();
 
       xzCtx.beginPath();
@@ -247,12 +263,14 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
   function drawYZ() {
     drawIsosurface(yzCtx, yzCanvas, 'yz', (sampleX, sampleY) => screenToWorldYZ(sampleX, sampleY));
 
+    const zoom = viewState.yz.zoom;
     editorState.balls.forEach((ball, index) => {
       const { px, py } = worldToScreenYZ(ball.y, ball.z);
+      const radiusPx = Math.max(1, ball.r * zoom);
       yzCtx.beginPath();
       yzCtx.strokeStyle = index === editorState.selectedIndex ? '#cc0000' : '#000000';
       yzCtx.lineWidth = index === editorState.selectedIndex ? 2 : 1;
-      yzCtx.arc(px, py, ball.r, 0, Math.PI * 2);
+      yzCtx.arc(px, py, radiusPx, 0, Math.PI * 2);
       yzCtx.stroke();
 
       yzCtx.beginPath();
@@ -270,6 +288,7 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
   }
 
   function hitTest(view, px, py) {
+    const zoom = viewState[view]?.zoom || 1;
     for (let i = editorState.balls.length - 1; i >= 0; i--) {
       const ball = editorState.balls[i];
       let sx;
@@ -285,7 +304,8 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
 
       const dx = px - sx;
       const dy = py - sy;
-      if (Math.hypot(dx, dy) <= ball.r) {
+      const radiusPx = ball.r * zoom;
+      if (Math.hypot(dx, dy) <= radiusPx) {
         return i;
       }
     }
@@ -293,7 +313,29 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
   }
 
   function getDefaultRadius() {
-    return Math.min(xyCanvas.width, xyCanvas.height) * 0.1 || 50;
+    const base = Math.min(xyCanvas.width, xyCanvas.height) * 0.1 || 50;
+    return base / viewState.xy.zoom;
+  }
+
+  function panViews(dx, dy) {
+    ['xy', 'xz', 'yz'].forEach(view => {
+      const state = viewState[view];
+      if (state) {
+        state.offsetX += dx / state.zoom;
+        state.offsetY -= dy / state.zoom;
+      }
+    });
+    drawAll();
+  }
+
+  function zoomViews(amount) {
+    const factor = amount > 0 ? 0.9 : 1.1;
+    ['xy', 'xz', 'yz'].forEach(view => {
+      const state = viewState[view];
+      if (!state) return;
+      state.zoom = Math.min(5, Math.max(0.2, state.zoom * factor));
+    });
+    drawAll();
   }
 
   return {
@@ -308,6 +350,8 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
     hitTest,
     getDefaultRadius,
     adjustPreviewRotation,
-    drawPreview3D
+    drawPreview3D,
+    panViews,
+    zoomViews
   };
 }
