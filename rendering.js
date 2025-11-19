@@ -271,44 +271,74 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
     const halfWidth = width / 2;
     const halfHeight = height / 2;
 
-    const spheres = editorState.balls.map((ball, index) => {
+    const depthLayers = Math.max(40, Math.round(resolutionInput.value * 0.6));
+    const threshold = parseFloat(thresholdInput.value) || 1;
+
+    const layerValues = new Array(depthLayers).fill(0).map((_, idx) => {
+      const t = idx / (depthLayers - 1);
+      const depth = -extent + t * extent * 2;
+      return depth;
+    });
+
+    layerValues.sort((a, b) => a - b);
+
+    layerValues.forEach(depth => {
+      const zWorld = depth;
+      const rotatedPlane = rotatePoint(0, 0, zWorld);
+      const screenCenterZ = rotatedPlane.z;
+      const denom = cameraDistance - screenCenterZ;
+      if (denom <= 10) return;
+      const perspective = cameraDistance / denom;
+      const radiusScale = scale * perspective;
+
+      const resolution3D = interactionState.fastMode ? 40 : 80;
+      const step = (Math.min(width, height) / resolution3D);
+
+      for (let iy = 0; iy < resolution3D; iy++) {
+        for (let ix = 0; ix < resolution3D; ix++) {
+          const localX = (ix / (resolution3D - 1) - 0.5) * extent * 2;
+          const localY = (iy / (resolution3D - 1) - 0.5) * extent * 2;
+          const rotated = rotatePoint(localX, localY, zWorld);
+          if (cameraDistance - rotated.z <= 10) continue;
+          const proj = cameraDistance / (cameraDistance - rotated.z);
+          const sampleX = halfWidth + rotated.x * scale * proj;
+          const sampleY = halfHeight - rotated.y * scale * proj;
+          const fieldValue = fieldAt(localX, localY, zWorld);
+          if (fieldValue < threshold) continue;
+
+          previewCtx.fillStyle = 'rgba(70, 130, 180, 0.12)';
+          previewCtx.fillRect(sampleX - step / 2, sampleY - step / 2, step, step);
+        }
+      }
+    });
+
+    editorState.balls.forEach((ball, index) => {
       const rotated = rotatePoint(ball.x, ball.y, ball.z);
       const denom = cameraDistance - rotated.z;
-      if (denom <= 10) return null;
+      if (denom <= 10) return;
       const perspective = cameraDistance / denom;
       const radius = ball.r * scale * perspective;
-      if (!Number.isFinite(radius) || radius <= 0.5) return null;
-      return {
-        px: halfWidth + rotated.x * scale * perspective,
-        py: halfHeight - rotated.y * scale * perspective,
-        radius,
-        depth: rotated.z,
-        index
-      };
-    }).filter(Boolean);
+      if (!Number.isFinite(radius) || radius <= 0.5) return;
 
-    spheres.sort((a, b) => a.depth - b.depth);
-
-    spheres.forEach(sphere => {
       const gradient = previewCtx.createRadialGradient(
-        sphere.px - sphere.radius * 0.3,
-        sphere.py - sphere.radius * 0.3,
-        sphere.radius * 0.1,
-        sphere.px,
-        sphere.py,
-        sphere.radius
+        halfWidth + rotated.x * scale * perspective - radius * 0.3,
+        halfHeight - rotated.y * scale * perspective - radius * 0.3,
+        radius * 0.1,
+        halfWidth + rotated.x * scale * perspective,
+        halfHeight - rotated.y * scale * perspective,
+        radius
       );
-      gradient.addColorStop(0, 'rgba(120, 150, 190, 0.9)');
-      gradient.addColorStop(1, 'rgba(70, 110, 150, 0.8)');
+      gradient.addColorStop(0, 'rgba(120, 150, 190, 0.7)');
+      gradient.addColorStop(1, 'rgba(70, 110, 150, 0.5)');
       previewCtx.fillStyle = gradient;
       previewCtx.beginPath();
-      previewCtx.arc(sphere.px, sphere.py, sphere.radius, 0, Math.PI * 2);
+      previewCtx.arc(halfWidth + rotated.x * scale * perspective, halfHeight - rotated.y * scale * perspective, radius, 0, Math.PI * 2);
       previewCtx.fill();
 
-      previewCtx.lineWidth = sphere.index === editorState.selectedIndex ? 2 : 1;
-      previewCtx.strokeStyle = sphere.index === editorState.selectedIndex ? '#cc0000' : '#1f2f3f';
+      previewCtx.lineWidth = index === editorState.selectedIndex ? 2 : 1;
+      previewCtx.strokeStyle = index === editorState.selectedIndex ? '#cc0000' : '#1f2f3f';
       previewCtx.beginPath();
-      previewCtx.arc(sphere.px, sphere.py, sphere.radius, 0, Math.PI * 2);
+      previewCtx.arc(halfWidth + rotated.x * scale * perspective, halfHeight - rotated.y * scale * perspective, radius, 0, Math.PI * 2);
       previewCtx.stroke();
     });
   }
