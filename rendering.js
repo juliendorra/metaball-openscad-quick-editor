@@ -55,19 +55,29 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, thresholdInput, r
     };
   }
 
-  function fieldAt(wx, wy, wz) {
+  function fieldAtSlice(view, coords) {
     let value = 0;
     for (const ball of editorState.balls) {
-      const dx = wx - ball.x;
-      const dy = wy - ball.y;
-      const dz = wz - ball.z;
-      const dist = Math.hypot(dx, dy, dz);
+      let dist;
+      if (view === 'xy') {
+        const dx = coords.x - ball.x;
+        const dy = coords.y - ball.y;
+        dist = Math.hypot(dx, dy);
+      } else if (view === 'xz') {
+        const dx = coords.x - ball.x;
+        const dz = coords.z - ball.z;
+        dist = Math.hypot(dx, dz);
+      } else {
+        const dy = coords.y - ball.y;
+        const dz = coords.z - ball.z;
+        dist = Math.hypot(dy, dz);
+      }
       value += dist === 0 ? 1e9 : ball.r / dist;
     }
     return value;
   }
 
-  function drawIsosurface(ctx, canvas, sampleToWorld) {
+  function drawIsosurface(ctx, canvas, view, sampleToWorld) {
     const width = canvas.width;
     const height = canvas.height;
     if (!width || !height) return;
@@ -83,8 +93,8 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, thresholdInput, r
       const sampleY = iy * stepY + stepY / 2;
       for (let ix = 0; ix < resolution; ix++) {
         const sampleX = ix * stepX + stepX / 2;
-        const { x, y, z } = sampleToWorld(sampleX, sampleY);
-        if (fieldAt(x, y, z) < iso) continue;
+        const coords = sampleToWorld(sampleX, sampleY);
+        if (fieldAtSlice(view, coords) < iso) continue;
 
         const startX = Math.floor(ix * stepX);
         const startY = Math.floor(iy * stepY);
@@ -107,10 +117,7 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, thresholdInput, r
   }
 
   function drawXY() {
-    drawIsosurface(xyCtx, xyCanvas, (sampleX, sampleY) => {
-      const { x, y } = screenToWorldXY(sampleX, sampleY);
-      return { x, y, z: 0 };
-    });
+    drawIsosurface(xyCtx, xyCanvas, 'xy', (sampleX, sampleY) => screenToWorldXY(sampleX, sampleY));
 
     editorState.balls.forEach((ball, index) => {
       const { px, py } = worldToScreenXY(ball.x, ball.y);
@@ -128,10 +135,7 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, thresholdInput, r
   }
 
   function drawXZ() {
-    drawIsosurface(xzCtx, xzCanvas, (sampleX, sampleY) => {
-      const { x, z } = screenToWorldXZ(sampleX, sampleY);
-      return { x, y: 0, z };
-    });
+    drawIsosurface(xzCtx, xzCanvas, 'xz', (sampleX, sampleY) => screenToWorldXZ(sampleX, sampleY));
 
     editorState.balls.forEach((ball, index) => {
       const { px, py } = worldToScreenXZ(ball.x, ball.z);
@@ -149,10 +153,7 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, thresholdInput, r
   }
 
   function drawYZ() {
-    drawIsosurface(yzCtx, yzCanvas, (sampleX, sampleY) => {
-      const { y, z } = screenToWorldYZ(sampleX, sampleY);
-      return { x: 0, y, z };
-    });
+    drawIsosurface(yzCtx, yzCanvas, 'yz', (sampleX, sampleY) => screenToWorldYZ(sampleX, sampleY));
 
     editorState.balls.forEach((ball, index) => {
       const { px, py } = worldToScreenYZ(ball.y, ball.z);
