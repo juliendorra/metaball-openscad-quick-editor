@@ -55,37 +55,36 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, thresholdInput, r
     };
   }
 
-  function fieldAtXY(wx, wy) {
+  function fieldAt(wx, wy, wz) {
     let value = 0;
     for (const ball of editorState.balls) {
       const dx = wx - ball.x;
       const dy = wy - ball.y;
-      const dz = -ball.z;
+      const dz = wz - ball.z;
       const dist = Math.hypot(dx, dy, dz);
       value += dist === 0 ? 1e9 : ball.r / dist;
     }
     return value;
   }
 
-  function drawXY() {
-    const width = xyCanvas.width;
-    const height = xyCanvas.height;
+  function drawIsosurface(ctx, canvas, sampleToWorld) {
+    const width = canvas.width;
+    const height = canvas.height;
+    if (!width || !height) return;
+
     const iso = parseFloat(thresholdInput.value) || 1;
     const resolution = Math.max(10, parseInt(resolutionInput.value, 10) || 120);
     const stepX = width / resolution;
     const stepY = height / resolution;
-
-    const imgData = xyCtx.createImageData(width, height);
+    const imgData = ctx.createImageData(width, height);
     const data = imgData.data;
 
     for (let iy = 0; iy < resolution; iy++) {
       const sampleY = iy * stepY + stepY / 2;
-      const wy = screenToWorldXY(0, sampleY).y;
-
       for (let ix = 0; ix < resolution; ix++) {
         const sampleX = ix * stepX + stepX / 2;
-        const wx = screenToWorldXY(sampleX, 0).x;
-        if (fieldAtXY(wx, wy) < iso) continue;
+        const { x, y, z } = sampleToWorld(sampleX, sampleY);
+        if (fieldAt(x, y, z) < iso) continue;
 
         const startX = Math.floor(ix * stepX);
         const startY = Math.floor(iy * stepY);
@@ -104,7 +103,14 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, thresholdInput, r
       }
     }
 
-    xyCtx.putImageData(imgData, 0, 0);
+    ctx.putImageData(imgData, 0, 0);
+  }
+
+  function drawXY() {
+    drawIsosurface(xyCtx, xyCanvas, (sampleX, sampleY) => {
+      const { x, y } = screenToWorldXY(sampleX, sampleY);
+      return { x, y, z: 0 };
+    });
 
     editorState.balls.forEach((ball, index) => {
       const { px, py } = worldToScreenXY(ball.x, ball.y);
@@ -122,7 +128,11 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, thresholdInput, r
   }
 
   function drawXZ() {
-    xzCtx.clearRect(0, 0, xzCanvas.width, xzCanvas.height);
+    drawIsosurface(xzCtx, xzCanvas, (sampleX, sampleY) => {
+      const { x, z } = screenToWorldXZ(sampleX, sampleY);
+      return { x, y: 0, z };
+    });
+
     editorState.balls.forEach((ball, index) => {
       const { px, py } = worldToScreenXZ(ball.x, ball.z);
       xzCtx.beginPath();
@@ -139,7 +149,11 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, thresholdInput, r
   }
 
   function drawYZ() {
-    yzCtx.clearRect(0, 0, yzCanvas.width, yzCanvas.height);
+    drawIsosurface(yzCtx, yzCanvas, (sampleX, sampleY) => {
+      const { y, z } = screenToWorldYZ(sampleX, sampleY);
+      return { x: 0, y, z };
+    });
+
     editorState.balls.forEach((ball, index) => {
       const { px, py } = worldToScreenYZ(ball.y, ball.z);
       yzCtx.beginPath();
