@@ -8,6 +8,7 @@ const xyCanvas = document.getElementById('xyCanvas');
 const xzCanvas = document.getElementById('xzCanvas');
 const yzCanvas = document.getElementById('yzCanvas');
 const previewCanvas = document.getElementById('preview3D');
+const previewViewButtons = previewCanvas?.querySelectorAll('button[data-view]');
 const ballList = document.getElementById('ballList');
 const addBtn = document.getElementById('addBtn');
 const addNegativeBtn = document.getElementById('addNegativeBtn');
@@ -47,12 +48,6 @@ const dragState = {
 };
 
 const cameraPanState = {
-  active: false,
-  lastX: 0,
-  lastY: 0
-};
-
-const previewDragState = {
   active: false,
   lastX: 0,
   lastY: 0
@@ -307,27 +302,6 @@ function stopCameraPan() {
   cameraPanState.active = false;
 }
 
-function handlePreviewPointerDown(event) {
-  if (!previewCanvas) return;
-  previewDragState.active = true;
-  previewDragState.lastX = event.clientX;
-  previewDragState.lastY = event.clientY;
-  event.preventDefault();
-}
-
-function handlePreviewPointerMove(event) {
-  if (!previewDragState.active) return;
-  const dx = event.clientX - previewDragState.lastX;
-  const dy = event.clientY - previewDragState.lastY;
-  previewDragState.lastX = event.clientX;
-  previewDragState.lastY = event.clientY;
-  renderer.adjustPreviewRotation(dx, dy);
-}
-
-function stopPreviewDrag() {
-  previewDragState.active = false;
-}
-
 function addBallFromContext({ negative = false } = {}) {
   if (!contextState.view) {
     addNewBall(undefined, undefined, undefined, undefined, negative);
@@ -436,7 +410,7 @@ function showContextMenu(pageX, pageY) {
 function handleViewContextMenu(event) {
   const target = event.target;
   if (!(target instanceof HTMLCanvasElement)) return;
-  if (target === previewCanvas) return;
+  if (previewCanvas && previewCanvas.contains(target)) return;
   event.preventDefault();
 
   let view = null;
@@ -499,18 +473,12 @@ xyCanvas.addEventListener('mousedown', event => handlePointerDown('xy', xyCanvas
 xzCanvas.addEventListener('mousedown', event => handlePointerDown('xz', xzCanvas, event));
 yzCanvas.addEventListener('mousedown', event => handlePointerDown('yz', yzCanvas, event));
 viewContainer.addEventListener('contextmenu', handleViewContextMenu);
-if (previewCanvas) {
-  previewCanvas.addEventListener('mousedown', handlePreviewPointerDown);
-}
-
 window.addEventListener('mousemove', event => {
   handlePointerMove(event);
-  handlePreviewPointerMove(event);
 });
 window.addEventListener('mouseup', () => {
   stopDragging();
   stopCameraPan();
-  stopPreviewDrag();
 });
 
 xyCanvas.addEventListener('wheel', handleWheel, { passive: false });
@@ -570,4 +538,13 @@ if (contextMenu) {
 
   window.addEventListener('resize', hideContextMenu);
   window.addEventListener('scroll', hideContextMenu, true);
+}
+
+if (previewViewButtons?.length) {
+  previewViewButtons.forEach(button => {
+    button.addEventListener('click', () => {
+      const view = button.dataset.view;
+      if (view) renderer.setPreviewView(view);
+    });
+  });
 }

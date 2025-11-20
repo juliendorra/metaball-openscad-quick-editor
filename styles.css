@@ -63,8 +63,52 @@ canvas {
   cursor: grab;
 }
 
-#preview3D:active {
-  cursor: grabbing;
+.three-preview {
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  align-items: stretch;
+  justify-content: stretch;
+  background: #f7f7f7;
+}
+
+.three-preview canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.three-preview__toolbar {
+  position: absolute;
+  left: 50%;
+  bottom: 8px;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 6px;
+  background: rgba(255, 255, 255, 0.94);
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  padding: 4px 6px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
+}
+
+.three-preview__toolbar button {
+  font-size: 12px;
+  padding: 4px 8px;
+  border: 1px solid #bbb;
+  border-radius: 4px;
+  background: #f7f7f7;
+  cursor: pointer;
+  color: #333;
+}
+
+.three-preview__toolbar button:hover {
+  background: #f0f0f0;
+}
+
+.three-preview__toolbar button:focus {
+  outline: 2px solid #4d90fe;
+  outline-offset: 1px;
 }
 
 #sidebar {

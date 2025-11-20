@@ -1,13 +1,199 @@
 import { editorState } from './state.js';
+import * as THREE from 'https://unpkg.com/three@0.160.0?module';
+import { OrbitControls } from 'https://unpkg.com/three@0.160.0/examples/jsm/controls/OrbitControls.js?module';
+
+const PREVIEW_SHADER_BALL_LIMIT = 64;
+const PREVIEW_SHADER_MAX_STEPS = 160;
+
+const PREVIEW_VERTEX_SHADER = `
+  varying vec2 vUv;
+  void main() {
+    vUv = uv;
+    gl_Position = vec4(position.xy, 0.0, 1.0);
+  }
+`;
+
+const PREVIEW_FRAGMENT_SHADER = `
+  precision highp float;
+
+  #define MAX_SHADER_BALLS ${PREVIEW_SHADER_BALL_LIMIT}
+  #define MAX_MARCH_STEPS ${PREVIEW_SHADER_MAX_STEPS}
+
+  uniform mat4 viewMatrixInverse;
+  uniform mat4 projectionMatrixInverse;
+  uniform vec3 boundsMin;
+  uniform vec3 boundsMax;
+  uniform vec3 boundsSize;
+  uniform float isoLevel;
+  uniform int ballCount;
+  uniform vec4 ballData[MAX_SHADER_BALLS];
+  uniform int marchSteps;
+  uniform vec3 lightDir;
+  uniform vec3 colorPositive;
+  uniform vec3 colorNegative;
+
+  varying vec2 vUv;
+
+  struct FieldSample {
+    float total;
+    float negative;
+  };
+
+  float rand(vec2 co) {
+    return fract(sin(dot(co.xy, vec2(12.9898, 78.233))) * 43758.5453);
+  }
+
+  FieldSample sampleField(vec3 p) {
+    FieldSample result;
+    result.total = 0.0;
+    result.negative = 0.0;
+    for (int i = 0; i < MAX_SHADER_BALLS; i++) {
+      if (i >= ballCount) {
+        break;
+      }
+      vec4 ball = ballData[i];
+      if (ball.w == 0.0) {
+        continue;
+      }
+      vec3 diff = p - ball.xyz;
+      float dist = length(diff);
+      if (dist == 0.0) {
+        dist = 0.0001;
+      }
+      float magnitude = abs(ball.w);
+      float contrib = magnitude / dist;
+      if (ball.w < 0.0) {
+        result.negative += contrib;
+        result.total -= contrib;
+      } else {
+        result.total += contrib;
+      }
+    }
+    return result;
+  }
+
+  float componentValue(FieldSample sampleValue, int componentIndex) {
+    return componentIndex == 1 ? sampleValue.negative : sampleValue.total;
+  }
+
+  vec3 getRayDirection(vec2 uv) {
+    vec2 ndc = vec2(uv.x * 2.0 - 1.0, (1.0 - uv.y) * 2.0 - 1.0);
+    vec4 clip = vec4(ndc, -1.0, 1.0);
+    vec4 view = projectionMatrixInverse * clip;
+    view = vec4(view.xy, -1.0, 0.0);
+    vec4 world = viewMatrixInverse * view;
+    return normalize(world.xyz);
+  }
+
+  bool intersectBox(vec3 ro, vec3 rd, vec3 bMin, vec3 bMax, out float tNear, out float tFar) {
+    vec3 inv = 1.0 / rd;
+    vec3 t0 = (bMin - ro) * inv;
+    vec3 t1 = (bMax - ro) * inv;
+    vec3 tsmaller = min(t0, t1);
+    vec3 tbigger = max(t0, t1);
+    tNear = max(max(tsmaller.x, tsmaller.y), max(tsmaller.z, 0.0));
+    tFar = min(tbigger.x, min(tbigger.y, tbigger.z));
+    return tFar > tNear;
+  }
+
+  vec3 estimateNormal(vec3 p, int componentIndex) {
+    float eps = max(0.4, length(boundsSize) * 0.003);
+    vec3 ex = vec3(eps, 0.0, 0.0);
+    vec3 ey = vec3(0.0, eps, 0.0);
+    vec3 ez = vec3(0.0, 0.0, eps);
+    float nx = componentValue(sampleField(p + ex), componentIndex) - componentValue(sampleField(p - ex), componentIndex);
+    float ny = componentValue(sampleField(p + ey), componentIndex) - componentValue(sampleField(p - ey), componentIndex);
+    float nz = componentValue(sampleField(p + ez), componentIndex) - componentValue(sampleField(p - ez), componentIndex);
+    vec3 grad = vec3(nx, ny, nz);
+    float lenGrad = length(grad);
+    if (lenGrad < 0.0001) {
+      return vec3(0.0, 0.0, 1.0);
+    }
+    return normalize(-grad);
+  }
+
+  void main() {
+    if (ballCount == 0) {
+      discard;
+    }
+
+    vec3 ro = cameraPosition;
+    vec3 rd = getRayDirection(vUv);
+    float tNear;
+    float tFar;
+    if (!intersectBox(ro, rd, boundsMin, boundsMax, tNear, tFar)) {
+      discard;
+    }
+
+    float range = tFar - tNear;
+    if (range <= 0.0) {
+      discard;
+    }
+
+    int steps = max(marchSteps, 1);
+    float stepSize = max(range / float(steps), 0.5);
+    float jitter = rand(gl_FragCoord.xy) * 0.5;
+    float t = tNear + stepSize * jitter;
+
+    vec3 hitPos = vec3(0.0);
+    int hitComponent = 0;
+    bool hit = false;
+
+    for (int i = 0; i < MAX_MARCH_STEPS; i++) {
+      if (i >= steps) {
+        break;
+      }
+      if (t > tFar) {
+        break;
+      }
+      vec3 samplePos = ro + rd * t;
+      FieldSample fieldValue = sampleField(samplePos);
+      bool positiveHit = fieldValue.total >= isoLevel;
+      bool negativeHit = fieldValue.negative >= isoLevel;
+      if (positiveHit || negativeHit) {
+        float tLow = max(t - stepSize, tNear);
+        float tHigh = t;
+        for (int j = 0; j < 5; j++) {
+          float mid = 0.5 * (tLow + tHigh);
+          FieldSample midSampleValue = sampleField(ro + rd * mid);
+          bool midPos = midSampleValue.total >= isoLevel;
+          bool midNeg = midSampleValue.negative >= isoLevel;
+          if ((positiveHit && midPos) || (negativeHit && midNeg)) {
+            tHigh = mid;
+            positiveHit = midPos;
+            negativeHit = midNeg;
+          } else {
+            tLow = mid;
+          }
+        }
+        hitPos = ro + rd * tHigh;
+        hitComponent = negativeHit ? 1 : 0;
+        hit = true;
+        break;
+      }
+      t += stepSize;
+    }
+
+    if (!hit) {
+      discard;
+    }
+
+    vec3 normal = estimateNormal(hitPos, hitComponent);
+    vec3 baseColor = hitComponent == 1 ? colorNegative : colorPositive;
+    vec3 l = normalize(lightDir);
+    float ndotl = clamp(dot(normal, l), 0.0, 1.0);
+    vec3 viewDir = normalize(ro - hitPos);
+    float fresnel = pow(1.0 - max(dot(normal, viewDir), 0.0), 3.0);
+    vec3 color = baseColor * (0.35 + 0.65 * ndotl) + fresnel * vec3(0.6);
+    float alpha = hitComponent == 1 ? 0.9 : 0.92;
+    gl_FragColor = vec4(color, alpha);
+  }
+`;
 
 export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, thresholdInput, resolutionInput }) {
   const xyCtx = xyCanvas.getContext('2d');
   const xzCtx = xzCanvas.getContext('2d');
   const yzCtx = yzCanvas.getContext('2d');
-  const previewRotation = {
-    yaw: Math.PI / 6,
-    pitch: -Math.PI / 6
-  };
 
   const MAX_BALLS = 128;
 
@@ -41,11 +227,14 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
   }
 
   function resizeCanvases() {
-    [xyCanvas, xzCanvas, yzCanvas, previewCanvas].forEach(canvas => {
+    [xyCanvas, xzCanvas, yzCanvas].forEach(canvas => {
       if (!canvas) return;
       canvas.width = canvas.clientWidth;
       canvas.height = canvas.clientHeight;
     });
+    if (previewViewport) {
+      previewViewport.resize();
+    }
     requestRender();
   }
 
@@ -61,6 +250,8 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
     yz: createIsoBuffer()
   };
 
+  const previewViewport = createThreePreview(previewCanvas);
+
   function createIsoBuffer() {
     const canvas = document.createElement('canvas');
     const ctx = canvas.getContext('2d', { willReadFrequently: true }) || canvas.getContext('2d');
@@ -70,6 +261,209 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
       width: 0,
       height: 0,
       imageData: null
+    };
+  }
+
+  function createThreePreview(container) {
+    if (!container) return null;
+
+    const toolbar = container.querySelector('.three-preview__toolbar');
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    renderer.setClearColor(0x0a0c10, 1);
+    renderer.domElement.style.width = '100%';
+    renderer.domElement.style.height = '100%';
+    renderer.domElement.setAttribute('aria-label', '3D preview');
+
+    if (toolbar) {
+      container.insertBefore(renderer.domElement, toolbar);
+    } else {
+      container.appendChild(renderer.domElement);
+    }
+
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 5000);
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.08;
+    controls.screenSpacePanning = true;
+    controls.enablePan = true;
+
+    const ambient = new THREE.AmbientLight(0xffffff, 0.35);
+    scene.add(ambient);
+    const dirLight = new THREE.DirectionalLight(0xffffff, 0.85);
+    dirLight.position.set(1, 1.3, 0.8);
+    scene.add(dirLight);
+    const rimLight = new THREE.DirectionalLight(0xaaccff, 0.45);
+    rimLight.position.set(-0.6, -0.7, -1.0);
+    scene.add(rimLight);
+
+    const ballVectors = Array.from({ length: PREVIEW_SHADER_BALL_LIMIT }, () => new THREE.Vector4());
+    const raymarchUniforms = {
+      isoLevel: { value: 1 },
+      ballCount: { value: 0 },
+      ballData: { value: ballVectors },
+      boundsMin: { value: new THREE.Vector3(-120, -120, -120) },
+      boundsMax: { value: new THREE.Vector3(120, 120, 120) },
+      boundsSize: { value: new THREE.Vector3(240, 240, 240) },
+      marchSteps: { value: 96 },
+      lightDir: { value: new THREE.Vector3(0.6, 0.8, 0.3).normalize() },
+      viewMatrixInverse: { value: new THREE.Matrix4() },
+      projectionMatrixInverse: { value: new THREE.Matrix4() },
+      colorPositive: { value: new THREE.Color(0x3a6ea5) },
+      colorNegative: { value: new THREE.Color(0xd45500) }
+    };
+
+    const quadGeometry = new THREE.PlaneGeometry(2, 2);
+    const quadMaterial = new THREE.ShaderMaterial({
+      uniforms: raymarchUniforms,
+      vertexShader: PREVIEW_VERTEX_SHADER,
+      fragmentShader: PREVIEW_FRAGMENT_SHADER,
+      transparent: true,
+      depthWrite: false,
+      depthTest: false
+    });
+    const metaballSurface = new THREE.Mesh(quadGeometry, quadMaterial);
+    metaballSurface.frustumCulled = false;
+    scene.add(metaballSurface);
+
+    const tempCenter = new THREE.Vector3();
+    const reusedOffset = new THREE.Vector3();
+    let lastCenter = new THREE.Vector3();
+    let lastExtent = 150;
+    let currentView = 'iso';
+    let initialized = false;
+
+    function updateBallUniforms(balls = []) {
+      const count = Math.min(balls.length, PREVIEW_SHADER_BALL_LIMIT);
+      raymarchUniforms.ballCount.value = count;
+      for (let i = 0; i < count; i++) {
+        const vector = ballVectors[i];
+        const ball = balls[i];
+        const radius = Math.max(0.001, Number(ball.r) || 0);
+        vector.set(
+          Number(ball.x) || 0,
+          Number(ball.y) || 0,
+          Number(ball.z) || 0,
+          ball.negative ? -radius : radius
+        );
+      }
+      for (let i = count; i < PREVIEW_SHADER_BALL_LIMIT; i++) {
+        ballVectors[i].set(0, 0, 0, 0);
+      }
+      raymarchUniforms.ballData.needsUpdate = true;
+    }
+
+    function updateBoundsUniform(bounds) {
+      const fallback = bounds || {
+        x: { min: -100, max: 100 },
+        y: { min: -100, max: 100 },
+        z: { min: -100, max: 100 }
+      };
+      const bMin = raymarchUniforms.boundsMin.value;
+      const bMax = raymarchUniforms.boundsMax.value;
+      bMin.set(
+        fallback.x?.min ?? -100,
+        fallback.y?.min ?? -100,
+        fallback.z?.min ?? -100
+      );
+      bMax.set(
+        fallback.x?.max ?? 100,
+        fallback.y?.max ?? 100,
+        fallback.z?.max ?? 100
+      );
+      raymarchUniforms.boundsSize.value.set(bMax.x - bMin.x, bMax.y - bMin.y, bMax.z - bMin.z);
+    }
+
+    function setQuality(fast) {
+      raymarchUniforms.marchSteps.value = fast ? 48 : 96;
+    }
+
+    function syncCameraUniforms() {
+      camera.updateMatrixWorld();
+      camera.updateProjectionMatrix();
+      raymarchUniforms.viewMatrixInverse.value.copy(camera.matrixWorld);
+      raymarchUniforms.projectionMatrixInverse.value.copy(camera.projectionMatrixInverse);
+    }
+
+    function render({ skipControlsUpdate = false } = {}) {
+      if (!skipControlsUpdate) {
+        controls.update();
+      }
+      syncCameraUniforms();
+      renderer.render(scene, camera);
+    }
+
+    controls.addEventListener('change', () => render({ skipControlsUpdate: true }));
+
+    function resize() {
+      const width = container.clientWidth;
+      const height = container.clientHeight;
+      if (!width || !height) return;
+      renderer.setSize(width, height, false);
+      camera.aspect = width / height;
+      camera.updateProjectionMatrix();
+      render();
+    }
+
+    function setView(view = currentView) {
+      const distance = Math.max(120, lastExtent * 2.2);
+      const center = lastCenter;
+      let offset;
+      switch (view) {
+        case 'front':
+          offset = [0, 0, distance];
+          break;
+        case 'side':
+          offset = [0, distance, 0];
+          break;
+        case 'bottom':
+          offset = [distance, 0, 0];
+          break;
+        default:
+          view = 'iso';
+          offset = [distance * 0.65, distance * 0.45, distance];
+          break;
+      }
+      currentView = view;
+      camera.position.set(center.x + offset[0], center.y + offset[1], center.z + offset[2]);
+      controls.target.copy(center);
+      controls.update();
+      render({ skipControlsUpdate: true });
+    }
+
+    function updateScene({ balls = [], center, extent, bounds, iso, fast }) {
+      const targetCenter = center || { x: 0, y: 0, z: 0 };
+      tempCenter.set(targetCenter.x, targetCenter.y, targetCenter.z);
+      lastExtent = Math.max(10, extent || 120);
+      updateBallUniforms(balls);
+      updateBoundsUniform(bounds);
+      raymarchUniforms.isoLevel.value = iso || 1;
+      setQuality(Boolean(fast));
+
+      if (!initialized) {
+        lastCenter.copy(tempCenter);
+        initialized = true;
+        setView('iso');
+        resize();
+        return;
+      }
+
+      if (!tempCenter.equals(lastCenter)) {
+        reusedOffset.subVectors(camera.position, controls.target);
+        controls.target.copy(tempCenter);
+        camera.position.copy(tempCenter).add(reusedOffset);
+        lastCenter.copy(tempCenter);
+        controls.update();
+      }
+      render({ skipControlsUpdate: true });
+    }
+
+    return {
+      resize,
+      setView,
+      updateScene,
+      render
     };
   }
 
@@ -90,240 +484,6 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
     return buffer;
   }
 
-  function createPreviewRenderer(canvas) {
-    if (!canvas) return null;
-    const gl = canvas.getContext('webgl2', { antialias: true }) || canvas.getContext('webgl', { antialias: true });
-    if (!gl) return null;
-
-    const isWebGL2 = typeof WebGL2RenderingContext !== 'undefined' && gl instanceof WebGL2RenderingContext;
-    const gl2Prefix = isWebGL2 ? '#version 300 es\n' : '';
-    const varyingDecl = isWebGL2 ? 'out vec2 vPos;' : 'varying vec2 vPos;';
-    const varyingUse = isWebGL2 ? 'in vec2 vPos;' : 'varying vec2 vPos;';
-    const outColorDecl = isWebGL2 ? 'out vec4 outColor;' : '';
-    const fragColor = isWebGL2 ? 'outColor' : 'gl_FragColor';
-    const attributeDecl = isWebGL2 ? 'in vec2 position;' : 'attribute vec2 position;';
-    const precision = 'precision highp float;\nprecision highp int;';
-
-    const vertexSrc = `${gl2Prefix}${precision}
-${attributeDecl}
-${varyingDecl}
-void main() {
-  vPos = position;
-  gl_Position = vec4(position, 0.0, 1.0);
-}`;
-
-    const MAX_STEPS = 160;
-    const fragmentSrc = `${gl2Prefix}${precision}
-${varyingUse}
-${outColorDecl}
-uniform vec3 uCameraPos;
-uniform mat3 uCameraRot;
-uniform float uFovScale;
-uniform float uThreshold;
-uniform float uMaxDistance;
-uniform float uSceneExtent;
-uniform int uBallCount;
-uniform vec4 uBalls[${MAX_BALLS}];
-
-float fieldValue(vec3 p) {
-  float total = 0.0;
-  for (int i = 0; i < ${MAX_BALLS}; i++) {
-    if (i >= uBallCount) break;
-    vec4 b = uBalls[i];
-    float r = abs(b.w);
-    float sign = b.w < 0.0 ? -1.0 : 1.0;
-    float d = length(p - b.xyz);
-    float contrib = d == 0.0 ? 1e9 : r / max(d, 1e-3);
-    total += sign * contrib;
-  }
-  return total;
-}
-
-vec3 estimateNormal(vec3 p) {
-  float eps = max(0.5, uSceneExtent * 0.003);
-  float dx = fieldValue(vec3(p.x + eps, p.y, p.z)) - fieldValue(vec3(p.x - eps, p.y, p.z));
-  float dy = fieldValue(vec3(p.x, p.y + eps, p.z)) - fieldValue(vec3(p.x, p.y - eps, p.z));
-  float dz = fieldValue(vec3(p.x, p.y, p.z + eps)) - fieldValue(vec3(p.x, p.y, p.z - eps));
-  return normalize(vec3(dx, dy, dz));
-}
-
-void main() {
-  vec2 uv = vPos;
-  vec3 dir = normalize(uCameraRot * normalize(vec3(uv * uFovScale, -1.0)));
-  float stepSize = max(uMaxDistance / float(${MAX_STEPS}), uSceneExtent * 0.015);
-  float t = 0.0;
-  bool hit = false;
-  vec3 pos;
-  float prevVal = 0.0;
-  float prevT = 0.0;
-  bool hasPrev = false;
-  for (int i = 0; i < ${MAX_STEPS}; i++) {
-    pos = uCameraPos + dir * t;
-    float v = fieldValue(pos);
-    if (v >= uThreshold) {
-      if (hasPrev) {
-        float denom = max(v - prevVal, 1e-4);
-        float ratio = clamp((uThreshold - prevVal) / denom, 0.0, 1.0);
-        float refinedT = mix(prevT, t, ratio);
-        pos = uCameraPos + dir * refinedT;
-        t = refinedT;
-      }
-      hit = true;
-      break;
-    }
-    hasPrev = true;
-    prevVal = v;
-    prevT = t;
-    t += stepSize;
-    if (t > uMaxDistance) break;
-  }
-
-  if (!hit) {
-    ${fragColor} = vec4(0.05, 0.07, 0.09, 1.0);
-    return;
-  }
-
-  vec3 normal = estimateNormal(pos);
-  vec3 lightDir = normalize(vec3(0.6, 0.7, 0.4));
-  float diffuse = clamp(dot(normal, lightDir), 0.05, 1.0);
-  vec3 viewDir = normalize(uCameraPos - pos);
-  float fresnel = pow(1.0 - max(dot(normal, viewDir), 0.0), 3.0) * 0.35;
-  vec3 baseColor = mix(vec3(0.28, 0.45, 0.62), vec3(0.15, 0.2, 0.28), fresnel);
-  ${fragColor} = vec4(baseColor * diffuse + fresnel * 0.6, 1.0);
-}`;
-
-    function createShader(type, source) {
-      const shader = gl.createShader(type);
-      gl.shaderSource(shader, source);
-      gl.compileShader(shader);
-      if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-        console.warn('Shader compile error', gl.getShaderInfoLog(shader));
-        return null;
-      }
-      return shader;
-    }
-
-    const vs = createShader(gl.VERTEX_SHADER, vertexSrc);
-    const fs = createShader(gl.FRAGMENT_SHADER, fragmentSrc);
-    if (!vs || !fs) return null;
-
-    const program = gl.createProgram();
-    gl.attachShader(program, vs);
-    gl.attachShader(program, fs);
-    gl.linkProgram(program);
-    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-      console.warn('Program link error', gl.getProgramInfoLog(program));
-      return null;
-    }
-
-    const quad = gl.createBuffer();
-    gl.bindBuffer(gl.ARRAY_BUFFER, quad);
-    gl.bufferData(
-      gl.ARRAY_BUFFER,
-      new Float32Array([
-        -1, -1,
-        3, -1,
-        -1, 3
-      ]),
-      gl.STATIC_DRAW
-    );
-
-    const attribLocation = gl.getAttribLocation(program, 'position');
-    gl.vertexAttribPointer(attribLocation, 2, gl.FLOAT, false, 0, 0);
-    gl.enableVertexAttribArray(attribLocation);
-
-    const uniforms = {
-      cameraPos: gl.getUniformLocation(program, 'uCameraPos'),
-      cameraRot: gl.getUniformLocation(program, 'uCameraRot'),
-      fovScale: gl.getUniformLocation(program, 'uFovScale'),
-      threshold: gl.getUniformLocation(program, 'uThreshold'),
-      maxDistance: gl.getUniformLocation(program, 'uMaxDistance'),
-      sceneExtent: gl.getUniformLocation(program, 'uSceneExtent'),
-      ballCount: gl.getUniformLocation(program, 'uBallCount'),
-      balls: gl.getUniformLocation(program, 'uBalls')
-    };
-
-    const ballsBuffer = new Float32Array(MAX_BALLS * 4);
-
-    function normalizeVec3(v) {
-      const length = Math.hypot(v[0], v[1], v[2]);
-      if (!length) return [0, 0, 0];
-      return [v[0] / length, v[1] / length, v[2] / length];
-    }
-
-    function crossVec3(a, b) {
-      return [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0]
-      ];
-    }
-
-    function draw({ threshold, rotation, extent, balls, center }) {
-      gl.viewport(0, 0, canvas.width, canvas.height);
-      gl.useProgram(program);
-
-      ballsBuffer.fill(0);
-      const count = Math.min(balls.count, MAX_BALLS);
-      for (let i = 0; i < count; i++) {
-        ballsBuffer[i * 4] = balls.xs[i];
-        ballsBuffer[i * 4 + 1] = balls.ys[i];
-        ballsBuffer[i * 4 + 2] = balls.zs[i];
-        ballsBuffer[i * 4 + 3] = balls.negative[i] ? -balls.rs[i] : balls.rs[i];
-      }
-
-      const yaw = rotation?.yaw ?? 0;
-      const pitch = rotation?.pitch ?? 0;
-      const cosPitch = Math.cos(pitch);
-      const forward = normalizeVec3([
-        Math.sin(yaw) * cosPitch,
-        Math.sin(pitch),
-        Math.cos(yaw) * cosPitch
-      ]);
-      const upHint = Math.abs(forward[1]) > 0.95 ? [0, 0, 1] : [0, 1, 0];
-      let right = crossVec3(upHint, forward);
-      const rightLen = Math.hypot(right[0], right[1], right[2]);
-      if (rightLen < 1e-5) {
-        right = crossVec3([0, 0, 1], forward);
-      }
-      right = normalizeVec3(right);
-      const up = normalizeVec3(crossVec3(forward, right));
-      const rotMatrix = new Float32Array([
-        right[0], up[0], -forward[0],
-        right[1], up[1], -forward[1],
-        right[2], up[2], -forward[2]
-      ]);
-
-      const safeExtent = Math.max(extent, 10);
-      const cameraDistance = safeExtent * 1.35 + 80;
-      const sceneCenter = center || { x: 0, y: 0, z: 0 };
-      const cameraPos = [
-        sceneCenter.x - forward[0] * cameraDistance,
-        sceneCenter.y - forward[1] * cameraDistance,
-        sceneCenter.z - forward[2] * cameraDistance
-      ];
-      const maxDistance = cameraDistance + safeExtent * 2;
-
-      gl.uniform3f(uniforms.cameraPos, cameraPos[0], cameraPos[1], cameraPos[2]);
-      gl.uniformMatrix3fv(uniforms.cameraRot, false, rotMatrix);
-      gl.uniform1f(uniforms.fovScale, Math.tan((45 * Math.PI) / 180));
-      gl.uniform1f(uniforms.threshold, threshold);
-      gl.uniform1f(uniforms.maxDistance, maxDistance);
-      gl.uniform1f(uniforms.sceneExtent, safeExtent);
-      gl.uniform1i(uniforms.ballCount, count);
-      gl.uniform4fv(uniforms.balls, ballsBuffer);
-
-      gl.clearColor(0.04, 0.05, 0.07, 1.0);
-      gl.clear(gl.COLOR_BUFFER_BIT);
-      gl.drawArrays(gl.TRIANGLES, 0, 3);
-    }
-
-    return {
-      draw
-    };
-  }
-
-  const previewRenderer = createPreviewRenderer(previewCanvas);
 
   function worldToScreenXY(x, y) {
     const { offsetX, offsetY, zoom } = viewState.xy;
@@ -579,25 +739,18 @@ void main() {
   }
 
   function drawPreview3D() {
-    if (previewRenderer && previewCanvas) {
-      const extent = getSceneExtent();
-      const threshold = parseFloat(thresholdInput.value) || 1;
-      previewRenderer.draw({
-        threshold,
-        rotation: previewRotation,
-        extent,
-        balls: ballCache,
-        center: getSceneCenter()
-      });
-    }
-  }
-
-  function adjustPreviewRotation(deltaX, deltaY) {
-    previewRotation.yaw += deltaX * 0.01;
-    previewRotation.pitch += deltaY * 0.01;
-    const limit = Math.PI / 2 - 0.1;
-    previewRotation.pitch = Math.max(-limit, Math.min(limit, previewRotation.pitch));
-    requestRender();
+    if (!previewViewport) return;
+    const extent = getSceneExtent();
+    const center = getSceneCenter();
+    const iso = parseFloat(thresholdInput.value) || 1;
+    previewViewport.updateScene({
+      balls: editorState.balls,
+      center,
+      extent,
+      bounds: axisBounds,
+      iso,
+      fast: interactionState.fastMode
+    });
   }
 
   function drawXY() {
@@ -749,6 +902,12 @@ void main() {
     requestRender();
   }
 
+  function setPreviewView(view) {
+    if (previewViewport) {
+      previewViewport.setView(view);
+    }
+  }
+
   return {
     resizeCanvases,
     drawAll: requestRender,
@@ -760,8 +919,8 @@ void main() {
     screenToWorldYZ,
     hitTest,
     getDefaultRadius,
-    adjustPreviewRotation,
     drawPreview3D,
+    setPreviewView,
     panViews,
     zoomViews,
     beginFastRender,

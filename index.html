@@ -28,7 +28,13 @@
       <canvas id="xyCanvas"></canvas>
       <canvas id="xzCanvas"></canvas>
       <canvas id="yzCanvas"></canvas>
-      <canvas id="preview3D"></canvas>
+      <div id="preview3D" class="three-preview">
+        <div class="three-preview__toolbar">
+          <button data-view="front" title="Reset to front (XY) view">Front</button>
+          <button data-view="side" title="Reset to side (XZ) view">Side</button>
+          <button data-view="bottom" title="Reset to bottom (YZ) view">Bottom</button>
+        </div>
+      </div>
     </div>
 
     <div id="sidebar">
