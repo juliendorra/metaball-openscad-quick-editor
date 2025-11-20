@@ -4,7 +4,7 @@ import { OrbitControls } from 'https://unpkg.com/three@0.160.0/examples/jsm/cont
 
 const PREVIEW_SHADER_BALL_LIMIT = 64;
 const PREVIEW_SHADER_MAX_STEPS = 160;
-const PREVIEW_SHADER_MAX_HITS = 5;
+const PREVIEW_SHADER_MAX_HITS = 10;
 
 const PREVIEW_VERTEX_SHADER = `
   varying vec2 vUv;
@@ -124,13 +124,14 @@ const PREVIEW_FRAGMENT_SHADER = `
   vec4 shadeSurface(vec3 ro, vec3 hitPos, int componentIndex) {
     vec3 normal = estimateNormal(hitPos, componentIndex);
     vec3 baseColor = componentIndex == 1 ? colorNegative : colorPositive;
+    baseColor = mix(baseColor, vec3(1.0), componentIndex == 1 ? 0.2 : 0.05);
     vec3 l = normalize(lightDir);
     float ndotl = clamp(dot(normal, l), 0.0, 1.0);
     vec3 viewDir = normalize(ro - hitPos);
-    float fresnel = pow(1.0 - max(dot(normal, viewDir), 0.0), 3.0);
-    float diffuse = 0.5 + 0.5 * ndotl;
-    vec3 color = baseColor * diffuse + fresnel * 0.25;
-    float alpha = 0.5;
+    float fresnel = pow(1.0 - max(dot(normal, viewDir), 0.0), 2.5);
+    float diffuse = 0.35 + 0.65 * ndotl;
+    vec3 color = baseColor * diffuse + fresnel * 0.15 * baseColor;
+    float alpha = componentIndex == 1 ? 0.4 : 0.55;
     return vec4(color, alpha);
   }
 
@@ -153,14 +154,13 @@ const PREVIEW_FRAGMENT_SHADER = `
     }
 
     int steps = max(marchSteps, 1);
-    float stepSize = max(range / float(steps), 0.5);
-    float jitter = rand(gl_FragCoord.xy) * 0.5;
-    float tPrev = tNear + stepSize * jitter;
+    float stepSize = max(range / float(steps), 0.35);
+    float tPrev = tNear;
     if (tPrev > tFar) {
       discard;
     }
     FieldSample prevSample = sampleField(ro + rd * tPrev);
-    float posPrev = prevSample.positive - isoLevel;
+    float posPrev = prevSample.total - isoLevel;
     float negPrev = prevSample.negative - isoLevel;
 
     vec4 accumulated = vec4(0.0);
@@ -203,7 +203,8 @@ const PREVIEW_FRAGMENT_SHADER = `
         accumulated.a += shaded.a * remain;
         hits += 1;
         if (accumulated.a > 0.98) break;
-        tPrev = hitT + stepSize * 0.25;
+        float exitStep = stepSize * 0.5;
+        tPrev = hitT + exitStep;
         if (tPrev > tFar) break;
         FieldSample afterSample = sampleField(ro + rd * tPrev);
         posPrev = afterSample.total - isoLevel;
@@ -779,16 +780,32 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
     return Math.max(10, spanX, spanY, spanZ);
   }
 
+  function expandBounds(bounds, pad = 80) {
+    if (!bounds) {
+      return {
+        x: { min: -100 - pad, max: 100 + pad },
+        y: { min: -100 - pad, max: 100 + pad },
+        z: { min: -100 - pad, max: 100 + pad }
+      };
+    }
+    return {
+      x: { min: bounds.x.min - pad, max: bounds.x.max + pad },
+      y: { min: bounds.y.min - pad, max: bounds.y.max + pad },
+      z: { min: bounds.z.min - pad, max: bounds.z.max + pad }
+    };
+  }
+
   function drawPreview3D() {
     if (!previewViewport) return;
     const extent = getSceneExtent();
     const center = getSceneCenter();
     const iso = parseFloat(thresholdInput.value) || 1;
+    const bounds = expandBounds(axisBounds, 80);
     previewViewport.updateScene({
       balls: editorState.balls,
       center,
       extent,
-      bounds: axisBounds,
+      bounds,
       iso,
       fast: interactionState.fastMode
     });
