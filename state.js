@@ -21,7 +21,8 @@ export function addBall(params = {}, defaultRadius = 50) {
     y: typeof params.y === 'number' ? params.y : 0,
     z: typeof params.z === 'number' ? params.z : 0,
     r: Math.max(1, radius || defaultRadius),
-    name: typeof params.name === 'string' ? params.name : `Ball ${index + 1}`
+    name: typeof params.name === 'string' ? params.name : `Ball ${index + 1}`,
+    negative: Boolean(params.negative)
   };
 
   editorState.balls.push(ball);

@@ -10,8 +10,10 @@ const yzCanvas = document.getElementById('yzCanvas');
 const previewCanvas = document.getElementById('preview3D');
 const ballList = document.getElementById('ballList');
 const addBtn = document.getElementById('addBtn');
+const addNegativeBtn = document.getElementById('addNegativeBtn');
 const duplicateBtn = document.getElementById('duplicateBtn');
 const splitBtn = document.getElementById('splitBtn');
+const togglePolarityBtn = document.getElementById('togglePolarityBtn');
 const removeBtn = document.getElementById('removeBtn');
 const thresholdInput = document.getElementById('threshold');
 const resolutionInput = document.getElementById('res');
@@ -21,8 +23,10 @@ const contextMenu = document.getElementById('contextMenu');
 const contextMenuButtons = contextMenu
   ? {
       add: contextMenu.querySelector('[data-action="add"]'),
+      addNegative: contextMenu.querySelector('[data-action="add-negative"]'),
       duplicate: contextMenu.querySelector('[data-action="duplicate"]'),
       split: contextMenu.querySelector('[data-action="split"]'),
+      toggle: contextMenu.querySelector('[data-action="toggle"]'),
       remove: contextMenu.querySelector('[data-action="remove"]')
     }
   : null;
@@ -87,7 +91,8 @@ function importFromScadText(scadText) {
     y: Number(ball.y) || 0,
     z: Number(ball.z) || 0,
     r: Math.max(1, Number(ball.r) || renderer.getDefaultRadius()),
-    name: ball.name && ball.name.trim() ? ball.name.trim() : `Ball ${index + 1}`
+    name: ball.name && ball.name.trim() ? ball.name.trim() : `Ball ${index + 1}`,
+    negative: Boolean(ball.negative)
   }));
 
   editorState.balls = importedBalls;
@@ -103,11 +108,15 @@ function importFromScadText(scadText) {
   return true;
 }
 
-function addNewBall(x, y, z, r) {
-  addBall({ x, y, z, r }, renderer.getDefaultRadius());
+function addNewBall(x, y, z, r, negative = false) {
+  addBall({ x, y, z, r, negative }, renderer.getDefaultRadius());
   updateBallList();
   updateScad();
   renderer.drawAll();
+}
+
+function addNegativeBall(x, y, z, r) {
+  addNewBall(x, y, z, r, true);
 }
 
 function duplicateSelectedBall() {
@@ -119,7 +128,8 @@ function duplicateSelectedBall() {
     y: ball.y + jitter * 0.3,
     z: ball.z,
     r: ball.r,
-    name: `${ball.name || 'Ball'} copy`
+    name: `${ball.name || 'Ball'} copy`,
+    negative: ball.negative
   };
   addBall(newBall, renderer.getDefaultRadius());
   updateBallList();
@@ -139,17 +149,28 @@ function splitSelectedBall() {
       ...original,
       x: original.x - gap / 2,
       r: halfRadius,
-      name: `${baseName} A`
+      name: `${baseName} A`,
+      negative: original.negative
     },
     {
       ...original,
       x: original.x + gap / 2,
       r: halfRadius,
-      name: `${baseName} B`
+      name: `${baseName} B`,
+      negative: original.negative
     }
   ];
   editorState.balls.splice(editorState.selectedIndex, 1, ...parts);
   editorState.selectedIndex = Math.min(editorState.selectedIndex, editorState.balls.length - 1);
+  updateBallList();
+  updateScad();
+  renderer.drawAll();
+}
+
+function toggleSelectedPolarity() {
+  const ball = getSelectedBall();
+  if (!ball) return;
+  ball.negative = !ball.negative;
   updateBallList();
   updateScad();
   renderer.drawAll();
@@ -307,23 +328,23 @@ function stopPreviewDrag() {
   previewDragState.active = false;
 }
 
-function addBallFromContext() {
+function addBallFromContext({ negative = false } = {}) {
   if (!contextState.view) {
-    addNewBall();
+    addNewBall(undefined, undefined, undefined, undefined, negative);
     return;
   }
 
   if (contextState.view === 'xy') {
     const { x, y } = renderer.screenToWorldXY(contextState.px, contextState.py);
-    addNewBall(x, y, 0);
+    addNewBall(x, y, 0, undefined, negative);
   } else if (contextState.view === 'xz') {
     const { x, z } = renderer.screenToWorldXZ(contextState.px, contextState.py);
-    addNewBall(x, 0, z);
+    addNewBall(x, 0, z, undefined, negative);
   } else if (contextState.view === 'yz') {
     const { y, z } = renderer.screenToWorldYZ(contextState.px, contextState.py);
-    addNewBall(0, y, z);
+    addNewBall(0, y, z, undefined, negative);
   } else {
-    addNewBall();
+    addNewBall(undefined, undefined, undefined, undefined, negative);
   }
 }
 
@@ -359,18 +380,28 @@ function init() {
 
 function updateActionButtons() {
   const hasSelection = editorState.selectedIndex >= 0;
+  const selectedBall = getSelectedBall();
   duplicateBtn.disabled = !hasSelection;
   splitBtn.disabled = !hasSelection;
   removeBtn.disabled = !hasSelection;
+  togglePolarityBtn.disabled = !hasSelection;
+  if (togglePolarityBtn) {
+    togglePolarityBtn.textContent = hasSelection && selectedBall?.negative ? 'Make Positive' : 'Make Negative';
+  }
   updateContextMenuState();
 }
 
 function updateContextMenuState() {
   if (!contextMenuButtons) return;
   const hasSelection = editorState.selectedIndex >= 0;
+  const selectedBall = getSelectedBall();
   contextMenuButtons.duplicate.disabled = !hasSelection;
   contextMenuButtons.split.disabled = !hasSelection;
   contextMenuButtons.remove.disabled = !hasSelection;
+  if (contextMenuButtons.toggle) {
+    contextMenuButtons.toggle.disabled = !hasSelection;
+    contextMenuButtons.toggle.textContent = hasSelection && selectedBall?.negative ? 'Make Positive' : 'Make Negative';
+  }
 }
 
 function hideContextMenu() {
@@ -433,8 +464,10 @@ function handleViewContextMenu(event) {
 }
 
 addBtn.addEventListener('click', () => addNewBall());
+addNegativeBtn.addEventListener('click', () => addNegativeBall());
 duplicateBtn.addEventListener('click', duplicateSelectedBall);
 splitBtn.addEventListener('click', splitSelectedBall);
+togglePolarityBtn.addEventListener('click', toggleSelectedPolarity);
 removeBtn.addEventListener('click', handleRemoval);
 window.addEventListener('keydown', event => {
   if (event.key === 'Delete' && editorState.selectedIndex >= 0) {
@@ -515,16 +548,21 @@ if (contextMenu) {
     hideContextMenu();
     if (action === 'add') {
       addBallFromContext();
+    } else if (action === 'add-negative') {
+      addBallFromContext({ negative: true });
     } else if (action === 'duplicate') {
       duplicateSelectedBall();
     } else if (action === 'split') {
       splitSelectedBall();
+    } else if (action === 'toggle') {
+      toggleSelectedPolarity();
     } else if (action === 'remove') {
       handleRemoval();
     }
   });
 
   window.addEventListener('mousedown', event => {
+    if (event.button !== 0) return;
     if (!contextMenu.contains(event.target)) {
       hideContextMenu();
     }

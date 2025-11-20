@@ -15,6 +15,9 @@ export function renderBallList({
     if (index === selectedIndex) {
       entry.style.background = '#e0f0ff';
     }
+    if (ball.negative) {
+      entry.classList.add('negative');
+    }
 
     const nameInput = document.createElement('input');
     nameInput.type = 'text';

@@ -95,10 +95,20 @@ h2 {
   gap: 0.4em;
 }
 
+.ball-entry.negative {
+  background: #fff3e6;
+  border-left: 3px solid #d45500;
+}
+
 .ball-entry .ball-name-input {
   flex: 1;
   min-width: 0;
   padding: 0.2em 0.4em;
+}
+
+.ball-entry.negative .ball-name-input,
+.ball-entry.negative input[type="number"] {
+  color: #b04700;
 }
 
 .ball-actions {

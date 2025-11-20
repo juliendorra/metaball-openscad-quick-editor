@@ -11,7 +11,7 @@ export function buildScadCode(balls, threshold) {
   let maxRadius = 0;
 
   balls.forEach((ball, index) => {
-    const { x, y, z, r } = ball;
+    const { x, y, z, r, negative } = ball;
     sumRadius += r;
     maxRadius = Math.max(maxRadius, r);
 
@@ -25,8 +25,11 @@ export function buildScadCode(balls, threshold) {
     const fallbackName = `Ball ${index + 1}`;
     const label = typeof ball.name === 'string' && ball.name.trim() ? ball.name.trim() : fallbackName;
     const safeLabel = label.replace(/\r?\n/g, ' ');
+    const polarityTag = negative ? ' [NEG]' : '';
+    const params = [`r=${r.toFixed(2)}`];
+    if (negative) params.push('negative=true');
     specEntries.push(
-      `    // ${safeLabel}\n    move([${x.toFixed(2)}, ${y.toFixed(2)}, ${z.toFixed(2)}]), mb_sphere(${r.toFixed(2)})`
+      `    // ${safeLabel}${polarityTag}\n    move([${x.toFixed(2)}, ${y.toFixed(2)}, ${z.toFixed(2)}]), mb_sphere(${params.join(', ')})`
     );
   });
 
@@ -111,15 +114,27 @@ export function parseScadCode(text) {
       entryIndex += 1;
       const comment = match[1] || '';
       const coords = match[2].split(',').map(part => parseFloat(part));
-      const radius = parseFloat(match[3]);
-      if (coords.length < 3 || coords.some(n => !Number.isFinite(n)) || !Number.isFinite(radius)) continue;
+      const rawParams = match[3].split(',').map(s => s.trim());
+      let radius = null;
+      let isNegative = false;
+      rawParams.forEach(param => {
+        if (/^r\s*=/.test(param)) {
+          const value = parseFloat(param.split('=')[1]);
+          if (Number.isFinite(value)) radius = value;
+        } else if (/^negative\s*=/.test(param)) {
+          const flag = param.split('=')[1]?.trim().toLowerCase();
+          isNegative = flag === 'true' || flag === '1';
+        }
+      });
+      if (!Number.isFinite(radius)) continue;
       const name = comment.replace('//', '').trim();
       balls.push({
         x: coords[0],
         y: coords[1],
         z: coords[2],
         r: Math.max(1, radius),
-        name: name || `Ball ${entryIndex}`
+        name: name || `Ball ${entryIndex}`,
+        negative: isNegative
       });
     }
   }

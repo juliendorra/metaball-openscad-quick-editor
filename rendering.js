@@ -73,16 +73,29 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
     };
   }
 
-  function fieldAt(wx, wy, wz) {
+  function fieldComponents(wx, wy, wz) {
+    let positive = 0;
+    let negative = 0;
     let value = 0;
     for (const ball of editorState.balls) {
       const dx = wx - ball.x;
       const dy = wy - ball.y;
       const dz = wz - ball.z;
       const dist = Math.hypot(dx, dy, dz);
-      value += dist === 0 ? 1e9 : ball.r / dist;
+      const contrib = dist === 0 ? 1e9 : ball.r / dist;
+      if (ball.negative) {
+        negative += contrib;
+        value -= contrib;
+      } else {
+        positive += contrib;
+        value += contrib;
+      }
     }
-    return value;
+    return { total: value, positive, negative };
+  }
+
+  function fieldAt(wx, wy, wz) {
+    return fieldComponents(wx, wy, wz).total;
   }
 
   function computeAxisBounds() {
@@ -185,7 +198,8 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
       for (let ix = 0; ix < resolution; ix++) {
         const sampleX = ix * stepX + stepX / 2;
         const coords = sampleToWorld(sampleX, sampleY);
-        let exceedsIso = false;
+        let exceedsPositive = false;
+        let exceedsNegative = false;
         for (let si = 0; si < samples; si++) {
           const t = samples === 1 ? 0.5 : si / (samples - 1);
           const axisValue = axisMin + t * (axisMax - axisMin);
@@ -207,26 +221,44 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
             wz = coords.z;
           }
 
-          if (fieldAt(wx, wy, wz) >= iso) {
-            exceedsIso = true;
-            break;
+          const components = fieldComponents(wx, wy, wz);
+          if (components.total >= iso) {
+            exceedsPositive = true;
           }
+          if (components.negative >= iso) {
+            exceedsNegative = true;
+          }
+          if (exceedsPositive && exceedsNegative) break;
         }
 
-        if (!exceedsIso) continue;
+        if (!exceedsPositive && !exceedsNegative) continue;
 
         const startX = Math.floor(ix * stepX);
         const startY = Math.floor(iy * stepY);
         const endX = Math.min(Math.floor((ix + 1) * stepX), width);
         const endY = Math.min(Math.floor((iy + 1) * stepY), height);
 
-        for (let py = startY; py < endY; py++) {
-          for (let px = startX; px < endX; px++) {
-            const idx = (py * width + px) * 4;
-            data[idx] = 70;
-            data[idx + 1] = 130;
-            data[idx + 2] = 180;
-            data[idx + 3] = 200;
+        if (exceedsPositive) {
+          for (let py = startY; py < endY; py++) {
+            for (let px = startX; px < endX; px++) {
+              const idx = (py * width + px) * 4;
+              data[idx] = 70;
+              data[idx + 1] = 130;
+              data[idx + 2] = 180;
+              data[idx + 3] = 200;
+            }
+          }
+        }
+
+        if (exceedsNegative) {
+          for (let py = startY; py < endY; py++) {
+            for (let px = startX; px < endX; px++) {
+              const idx = (py * width + px) * 4;
+              data[idx] = Math.round((data[idx] + 230) / 2);
+              data[idx + 1] = Math.round((data[idx + 1] + 110) / 2);
+              data[idx + 2] = Math.round((data[idx + 2] + 30) / 2);
+              data[idx + 3] = Math.min(255, Math.round((data[idx + 3] + 200) / 2));
+            }
           }
         }
       }
@@ -288,9 +320,6 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
       const screenCenterZ = rotatedPlane.z;
       const denom = cameraDistance - screenCenterZ;
       if (denom <= 10) return;
-      const perspective = cameraDistance / denom;
-      const radiusScale = scale * perspective;
-
       const resolution3D = interactionState.fastMode ? 40 : 80;
       const step = (Math.min(width, height) / resolution3D);
 
@@ -303,11 +332,15 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
           const proj = cameraDistance / (cameraDistance - rotated.z);
           const sampleX = halfWidth + rotated.x * scale * proj;
           const sampleY = halfHeight - rotated.y * scale * proj;
-          const fieldValue = fieldAt(localX, localY, zWorld);
-          if (fieldValue < threshold) continue;
-
-          previewCtx.fillStyle = 'rgba(70, 130, 180, 0.12)';
-          previewCtx.fillRect(sampleX - step / 2, sampleY - step / 2, step, step);
+          const components = fieldComponents(localX, localY, zWorld);
+          if (components.total >= threshold) {
+            previewCtx.fillStyle = 'rgba(70, 130, 180, 0.12)';
+            previewCtx.fillRect(sampleX - step / 2, sampleY - step / 2, step, step);
+          }
+          if (components.negative >= threshold) {
+            previewCtx.fillStyle = 'rgba(230, 110, 30, 0.18)';
+            previewCtx.fillRect(sampleX - step / 2, sampleY - step / 2, step, step);
+          }
         }
       }
     });
@@ -328,15 +361,21 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
         halfHeight - rotated.y * scale * perspective,
         radius
       );
-      gradient.addColorStop(0, 'rgba(120, 150, 190, 0.7)');
-      gradient.addColorStop(1, 'rgba(70, 110, 150, 0.5)');
+      if (ball.negative) {
+        gradient.addColorStop(0, 'rgba(255, 150, 60, 0.7)');
+        gradient.addColorStop(1, 'rgba(200, 80, 0, 0.5)');
+      } else {
+        gradient.addColorStop(0, 'rgba(120, 150, 190, 0.7)');
+        gradient.addColorStop(1, 'rgba(70, 110, 150, 0.5)');
+      }
       previewCtx.fillStyle = gradient;
       previewCtx.beginPath();
       previewCtx.arc(halfWidth + rotated.x * scale * perspective, halfHeight - rotated.y * scale * perspective, radius, 0, Math.PI * 2);
       previewCtx.fill();
 
       previewCtx.lineWidth = index === editorState.selectedIndex ? 2 : 1;
-      previewCtx.strokeStyle = index === editorState.selectedIndex ? '#cc0000' : '#1f2f3f';
+      const outlineColor = ball.negative ? '#d45500' : '#1f2f3f';
+      previewCtx.strokeStyle = index === editorState.selectedIndex ? '#cc0000' : outlineColor;
       previewCtx.beginPath();
       previewCtx.arc(halfWidth + rotated.x * scale * perspective, halfHeight - rotated.y * scale * perspective, radius, 0, Math.PI * 2);
       previewCtx.stroke();
@@ -358,14 +397,15 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
     editorState.balls.forEach((ball, index) => {
       const { px, py } = worldToScreenXY(ball.x, ball.y);
       const radiusPx = Math.max(1, ball.r * zoom);
+      const baseColor = ball.negative ? '#d45500' : '#000000';
       xyCtx.beginPath();
-      xyCtx.strokeStyle = index === editorState.selectedIndex ? '#cc0000' : '#000000';
+      xyCtx.strokeStyle = index === editorState.selectedIndex ? '#cc0000' : baseColor;
       xyCtx.lineWidth = index === editorState.selectedIndex ? 2 : 1;
       xyCtx.arc(px, py, radiusPx, 0, Math.PI * 2);
       xyCtx.stroke();
 
       xyCtx.beginPath();
-      xyCtx.fillStyle = index === editorState.selectedIndex ? '#cc0000' : '#000000';
+      xyCtx.fillStyle = index === editorState.selectedIndex ? '#cc0000' : baseColor;
       xyCtx.arc(px, py, 3, 0, Math.PI * 2);
       xyCtx.fill();
     });
@@ -378,14 +418,15 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
     editorState.balls.forEach((ball, index) => {
       const { px, py } = worldToScreenXZ(ball.x, ball.z);
       const radiusPx = Math.max(1, ball.r * zoom);
+      const baseColor = ball.negative ? '#d45500' : '#000000';
       xzCtx.beginPath();
-      xzCtx.strokeStyle = index === editorState.selectedIndex ? '#cc0000' : '#000000';
+      xzCtx.strokeStyle = index === editorState.selectedIndex ? '#cc0000' : baseColor;
       xzCtx.lineWidth = index === editorState.selectedIndex ? 2 : 1;
       xzCtx.arc(px, py, radiusPx, 0, Math.PI * 2);
       xzCtx.stroke();
 
       xzCtx.beginPath();
-      xzCtx.fillStyle = index === editorState.selectedIndex ? '#cc0000' : '#000000';
+      xzCtx.fillStyle = index === editorState.selectedIndex ? '#cc0000' : baseColor;
       xzCtx.arc(px, py, 3, 0, Math.PI * 2);
       xzCtx.fill();
     });
@@ -398,14 +439,15 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
     editorState.balls.forEach((ball, index) => {
       const { px, py } = worldToScreenYZ(ball.y, ball.z);
       const radiusPx = Math.max(1, ball.r * zoom);
+      const baseColor = ball.negative ? '#d45500' : '#000000';
       yzCtx.beginPath();
-      yzCtx.strokeStyle = index === editorState.selectedIndex ? '#cc0000' : '#000000';
+      yzCtx.strokeStyle = index === editorState.selectedIndex ? '#cc0000' : baseColor;
       yzCtx.lineWidth = index === editorState.selectedIndex ? 2 : 1;
       yzCtx.arc(px, py, radiusPx, 0, Math.PI * 2);
       yzCtx.stroke();
 
       yzCtx.beginPath();
-      yzCtx.fillStyle = index === editorState.selectedIndex ? '#cc0000' : '#000000';
+      yzCtx.fillStyle = index === editorState.selectedIndex ? '#cc0000' : baseColor;
       yzCtx.arc(px, py, 3, 0, Math.PI * 2);
       yzCtx.fill();
     });
