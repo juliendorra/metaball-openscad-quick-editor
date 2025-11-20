@@ -124,14 +124,14 @@ const PREVIEW_FRAGMENT_SHADER = `
   vec4 shadeSurface(vec3 ro, vec3 hitPos, int componentIndex) {
     vec3 normal = estimateNormal(hitPos, componentIndex);
     vec3 baseColor = componentIndex == 1 ? colorNegative : colorPositive;
-    baseColor = mix(baseColor, vec3(1.0), componentIndex == 1 ? 0.2 : 0.05);
     vec3 l = normalize(lightDir);
     float ndotl = clamp(dot(normal, l), 0.0, 1.0);
     vec3 viewDir = normalize(ro - hitPos);
-    float fresnel = pow(1.0 - max(dot(normal, viewDir), 0.0), 2.5);
-    float diffuse = 0.35 + 0.65 * ndotl;
-    vec3 color = baseColor * diffuse + fresnel * 0.15 * baseColor;
-    float alpha = componentIndex == 1 ? 0.4 : 0.55;
+    float fresnel = pow(1.0 - max(dot(normal, viewDir), 0.0), 1.8);
+    float ambient = 0.6;
+    float diffuse = ambient + 0.4 * ndotl;
+    vec3 color = baseColor * diffuse + fresnel * 0.12 * baseColor;
+    float alpha = componentIndex == 1 ? 0.4 : 1.0;
     return vec4(color, alpha);
   }
 
@@ -344,7 +344,7 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
       lightDir: { value: new THREE.Vector3(0.6, 0.8, 0.3).normalize() },
       viewMatrixInverse: { value: new THREE.Matrix4() },
       projectionMatrixInverse: { value: new THREE.Matrix4() },
-      colorPositive: { value: new THREE.Color(0x3a6ea5) },
+      colorPositive: { value: new THREE.Color(0x5a93d6) },
       colorNegative: { value: new THREE.Color(0xd45500) }
     };
 
@@ -437,6 +437,10 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
       camera.updateProjectionMatrix();
       raymarchUniforms.viewMatrixInverse.value.copy(camera.matrixWorld);
       raymarchUniforms.projectionMatrixInverse.value.copy(camera.projectionMatrixInverse);
+      const lightDirWorld = new THREE.Vector3(-0.6, 0.8, 0.4)
+        .normalize()
+        .applyQuaternion(camera.quaternion);
+      raymarchUniforms.lightDir.value.copy(lightDirWorld).normalize();
     }
 
     function render({ skipControlsUpdate = false } = {}) {
