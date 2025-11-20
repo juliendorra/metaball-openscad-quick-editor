@@ -1,9 +1,10 @@
 import { editorState } from './state.js';
-import * as THREE from 'https://unpkg.com/three@0.160.0?module';
+import * as THREE from 'https://unpkg.com/three@0.160.0/build/three.module.js?module';
 import { OrbitControls } from 'https://unpkg.com/three@0.160.0/examples/jsm/controls/OrbitControls.js?module';
 
 const PREVIEW_SHADER_BALL_LIMIT = 64;
 const PREVIEW_SHADER_MAX_STEPS = 160;
+const PREVIEW_SHADER_MAX_HITS = 5;
 
 const PREVIEW_VERTEX_SHADER = `
   varying vec2 vUv;
@@ -18,6 +19,7 @@ const PREVIEW_FRAGMENT_SHADER = `
 
   #define MAX_SHADER_BALLS ${PREVIEW_SHADER_BALL_LIMIT}
   #define MAX_MARCH_STEPS ${PREVIEW_SHADER_MAX_STEPS}
+  #define MAX_RAY_HITS ${PREVIEW_SHADER_MAX_HITS}
 
   uniform mat4 viewMatrixInverse;
   uniform mat4 projectionMatrixInverse;
@@ -37,6 +39,7 @@ const PREVIEW_FRAGMENT_SHADER = `
   struct FieldSample {
     float total;
     float negative;
+    float positive;
   };
 
   float rand(vec2 co) {
@@ -47,6 +50,7 @@ const PREVIEW_FRAGMENT_SHADER = `
     FieldSample result;
     result.total = 0.0;
     result.negative = 0.0;
+    result.positive = 0.0;
     for (int i = 0; i < MAX_SHADER_BALLS; i++) {
       if (i >= ballCount) {
         break;
@@ -67,6 +71,7 @@ const PREVIEW_FRAGMENT_SHADER = `
         result.total -= contrib;
       } else {
         result.total += contrib;
+        result.positive += contrib;
       }
     }
     return result;
@@ -83,6 +88,10 @@ const PREVIEW_FRAGMENT_SHADER = `
     view = vec4(view.xy, -1.0, 0.0);
     vec4 world = viewMatrixInverse * view;
     return normalize(world.xyz);
+  }
+
+  vec3 cameraWorldPosition() {
+    return vec3(viewMatrixInverse[3][0], viewMatrixInverse[3][1], viewMatrixInverse[3][2]);
   }
 
   bool intersectBox(vec3 ro, vec3 rd, vec3 bMin, vec3 bMax, out float tNear, out float tFar) {
@@ -112,12 +121,25 @@ const PREVIEW_FRAGMENT_SHADER = `
     return normalize(-grad);
   }
 
+  vec4 shadeSurface(vec3 ro, vec3 hitPos, int componentIndex) {
+    vec3 normal = estimateNormal(hitPos, componentIndex);
+    vec3 baseColor = componentIndex == 1 ? colorNegative : colorPositive;
+    vec3 l = normalize(lightDir);
+    float ndotl = clamp(dot(normal, l), 0.0, 1.0);
+    vec3 viewDir = normalize(ro - hitPos);
+    float fresnel = pow(1.0 - max(dot(normal, viewDir), 0.0), 3.0);
+    float diffuse = 0.5 + 0.5 * ndotl;
+    vec3 color = baseColor * diffuse + fresnel * 0.25;
+    float alpha = 0.5;
+    return vec4(color, alpha);
+  }
+
   void main() {
     if (ballCount == 0) {
       discard;
     }
 
-    vec3 ro = cameraPosition;
+    vec3 ro = cameraWorldPosition();
     vec3 rd = getRayDirection(vUv);
     float tNear;
     float tFar;
@@ -133,60 +155,71 @@ const PREVIEW_FRAGMENT_SHADER = `
     int steps = max(marchSteps, 1);
     float stepSize = max(range / float(steps), 0.5);
     float jitter = rand(gl_FragCoord.xy) * 0.5;
-    float t = tNear + stepSize * jitter;
-
-    vec3 hitPos = vec3(0.0);
-    int hitComponent = 0;
-    bool hit = false;
-
-    for (int i = 0; i < MAX_MARCH_STEPS; i++) {
-      if (i >= steps) {
-        break;
-      }
-      if (t > tFar) {
-        break;
-      }
-      vec3 samplePos = ro + rd * t;
-      FieldSample fieldValue = sampleField(samplePos);
-      bool positiveHit = fieldValue.total >= isoLevel;
-      bool negativeHit = fieldValue.negative >= isoLevel;
-      if (positiveHit || negativeHit) {
-        float tLow = max(t - stepSize, tNear);
-        float tHigh = t;
-        for (int j = 0; j < 5; j++) {
-          float mid = 0.5 * (tLow + tHigh);
-          FieldSample midSampleValue = sampleField(ro + rd * mid);
-          bool midPos = midSampleValue.total >= isoLevel;
-          bool midNeg = midSampleValue.negative >= isoLevel;
-          if ((positiveHit && midPos) || (negativeHit && midNeg)) {
-            tHigh = mid;
-            positiveHit = midPos;
-            negativeHit = midNeg;
-          } else {
-            tLow = mid;
-          }
-        }
-        hitPos = ro + rd * tHigh;
-        hitComponent = negativeHit ? 1 : 0;
-        hit = true;
-        break;
-      }
-      t += stepSize;
-    }
-
-    if (!hit) {
+    float tPrev = tNear + stepSize * jitter;
+    if (tPrev > tFar) {
       discard;
     }
+    FieldSample prevSample = sampleField(ro + rd * tPrev);
+    float posPrev = prevSample.positive - isoLevel;
+    float negPrev = prevSample.negative - isoLevel;
 
-    vec3 normal = estimateNormal(hitPos, hitComponent);
-    vec3 baseColor = hitComponent == 1 ? colorNegative : colorPositive;
-    vec3 l = normalize(lightDir);
-    float ndotl = clamp(dot(normal, l), 0.0, 1.0);
-    vec3 viewDir = normalize(ro - hitPos);
-    float fresnel = pow(1.0 - max(dot(normal, viewDir), 0.0), 3.0);
-    vec3 color = baseColor * (0.35 + 0.65 * ndotl) + fresnel * vec3(0.6);
-    float alpha = hitComponent == 1 ? 0.9 : 0.92;
-    gl_FragColor = vec4(color, alpha);
+    vec4 accumulated = vec4(0.0);
+    int hits = 0;
+
+    for (int i = 0; i < MAX_MARCH_STEPS && hits < MAX_RAY_HITS; i++) {
+      float tCurr = tPrev + stepSize;
+      if (tCurr > tFar) {
+        break;
+      }
+      FieldSample currSample = sampleField(ro + rd * tCurr);
+      float posCurr = currSample.total - isoLevel;
+      float negCurr = currSample.negative - isoLevel;
+
+      bool found = false;
+      int component = 0;
+      float hitT = 0.0;
+
+      if (posPrev < 0.0 && posCurr >= 0.0) {
+        float denom = posPrev - posCurr;
+        float frac = denom != 0.0 ? posPrev / denom : 0.5;
+        frac = clamp(frac, 0.0, 1.0);
+        hitT = mix(tPrev, tCurr, frac);
+        component = 0;
+        found = true;
+      } else if (negPrev < 0.0 && negCurr >= 0.0) {
+        float denom = negPrev - negCurr;
+        float frac = denom != 0.0 ? negPrev / denom : 0.5;
+        frac = clamp(frac, 0.0, 1.0);
+        hitT = mix(tPrev, tCurr, frac);
+        component = 1;
+        found = true;
+      }
+
+      if (found) {
+        vec3 hitPos = ro + rd * hitT;
+        vec4 shaded = shadeSurface(ro, hitPos, component);
+        float remain = 1.0 - accumulated.a;
+        accumulated.rgb += shaded.rgb * shaded.a * remain;
+        accumulated.a += shaded.a * remain;
+        hits += 1;
+        if (accumulated.a > 0.98) break;
+        tPrev = hitT + stepSize * 0.25;
+        if (tPrev > tFar) break;
+        FieldSample afterSample = sampleField(ro + rd * tPrev);
+        posPrev = afterSample.total - isoLevel;
+        negPrev = afterSample.negative - isoLevel;
+        continue;
+      }
+
+      tPrev = tCurr;
+      posPrev = posCurr;
+      negPrev = negCurr;
+    }
+
+    if (accumulated.a <= 0.0) {
+      discard;
+    }
+    gl_FragColor = accumulated;
   }
 `;
 
@@ -268,9 +301,9 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
     if (!container) return null;
 
     const toolbar = container.querySelector('.three-preview__toolbar');
-    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-    renderer.setClearColor(0x0a0c10, 1);
+    renderer.setClearColor(0xffffff, 1);
     renderer.domElement.style.width = '100%';
     renderer.domElement.style.height = '100%';
     renderer.domElement.setAttribute('aria-label', '3D preview');
@@ -329,10 +362,29 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
 
     const tempCenter = new THREE.Vector3();
     const reusedOffset = new THREE.Vector3();
+    const tempDirection = new THREE.Vector3();
     let lastCenter = new THREE.Vector3();
     let lastExtent = 150;
     let currentView = 'iso';
     let initialized = false;
+    const viewPresets = {
+      iso: {
+        dir: new THREE.Vector3(-0.8, -0.9, 0.75),
+        up: new THREE.Vector3(0, 0, 1)
+      },
+      front: {
+        dir: new THREE.Vector3(0, 0, 1),
+        up: new THREE.Vector3(0, 1, 0)
+      },
+      side: {
+        dir: new THREE.Vector3(0, -1, 0),
+        up: new THREE.Vector3(0, 0, 1)
+      },
+      bottom: {
+        dir: new THREE.Vector3(-1, 0, 0),
+        up: new THREE.Vector3(0, 1, 0)
+      }
+    };
 
     function updateBallUniforms(balls = []) {
       const count = Math.min(balls.length, PREVIEW_SHADER_BALL_LIMIT);
@@ -407,26 +459,15 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
     }
 
     function setView(view = currentView) {
+      const resolvedView = viewPresets[view] ? view : 'iso';
+      const preset = viewPresets[resolvedView];
       const distance = Math.max(120, lastExtent * 2.2);
       const center = lastCenter;
-      let offset;
-      switch (view) {
-        case 'front':
-          offset = [0, 0, distance];
-          break;
-        case 'side':
-          offset = [0, distance, 0];
-          break;
-        case 'bottom':
-          offset = [distance, 0, 0];
-          break;
-        default:
-          view = 'iso';
-          offset = [distance * 0.65, distance * 0.45, distance];
-          break;
-      }
-      currentView = view;
-      camera.position.set(center.x + offset[0], center.y + offset[1], center.z + offset[2]);
+      tempDirection.copy(preset.dir).normalize().multiplyScalar(distance);
+      camera.up.copy(preset.up);
+      controls.object.up.copy(preset.up);
+      camera.position.set(center.x + tempDirection.x, center.y + tempDirection.y, center.z + tempDirection.z);
+      currentView = resolvedView;
       controls.target.copy(center);
       controls.update();
       render({ skipControlsUpdate: true });

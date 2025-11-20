@@ -59,7 +59,7 @@ canvas {
   grid-area: preview3d;
   border-left: 1px solid #ccc;
   border-top: 1px solid #ccc;
-  background: #f7f7f7;
+  background: #fff;
   cursor: grab;
 }
 
@@ -69,7 +69,7 @@ canvas {
   display: flex;
   align-items: stretch;
   justify-content: stretch;
-  background: #f7f7f7;
+  background: #fff;
 }
 
 .three-preview canvas {
