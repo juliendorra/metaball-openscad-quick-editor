@@ -302,20 +302,20 @@ function stopCameraPan() {
   cameraPanState.active = false;
 }
 
-function addBallFromContext({ negative = false } = {}) {
-  if (!contextState.view) {
+function addBallFromContext({ negative = false, context = contextState } = {}) {
+  if (!context?.view) {
     addNewBall(undefined, undefined, undefined, undefined, negative);
     return;
   }
 
-  if (contextState.view === 'xy') {
-    const { x, y } = renderer.screenToWorldXY(contextState.px, contextState.py);
+  if (context.view === 'xy') {
+    const { x, y } = renderer.screenToWorldXY(context.px, context.py);
     addNewBall(x, y, 0, undefined, negative);
-  } else if (contextState.view === 'xz') {
-    const { x, z } = renderer.screenToWorldXZ(contextState.px, contextState.py);
+  } else if (context.view === 'xz') {
+    const { x, z } = renderer.screenToWorldXZ(context.px, context.py);
     addNewBall(x, 0, z, undefined, negative);
-  } else if (contextState.view === 'yz') {
-    const { y, z } = renderer.screenToWorldYZ(contextState.px, contextState.py);
+  } else if (context.view === 'yz') {
+    const { y, z } = renderer.screenToWorldYZ(context.px, context.py);
     addNewBall(0, y, z, undefined, negative);
   } else {
     addNewBall(undefined, undefined, undefined, undefined, negative);
@@ -513,11 +513,12 @@ if (contextMenu) {
     const button = event.target.closest('button[data-action]');
     if (!button) return;
     const action = button.dataset.action;
+    const context = { ...contextState };
     hideContextMenu();
     if (action === 'add') {
-      addBallFromContext();
+      addBallFromContext({ context });
     } else if (action === 'add-negative') {
-      addBallFromContext({ negative: true });
+      addBallFromContext({ negative: true, context });
     } else if (action === 'duplicate') {
       duplicateSelectedBall();
     } else if (action === 'split') {
