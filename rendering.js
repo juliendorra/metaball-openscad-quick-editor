@@ -370,20 +370,20 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
     let initialized = false;
     const viewPresets = {
       iso: {
-        dir: new THREE.Vector3(-0.8, -0.9, 0.75),
-        up: new THREE.Vector3(0, 0, 1)
+        dir: new THREE.Vector3(0.75, 0.75, -0.75),
+        up: new THREE.Vector3(0, -1, 0)
       },
       front: {
-        dir: new THREE.Vector3(0, 0, 1),
-        up: new THREE.Vector3(0, 1, 0)
+        dir: new THREE.Vector3(0, 0, -1),
+        up: new THREE.Vector3(0, -1, 0)
       },
       side: {
         dir: new THREE.Vector3(0, -1, 0),
-        up: new THREE.Vector3(0, 0, 1)
+        up: new THREE.Vector3(-1, 0, 0)
       },
       bottom: {
-        dir: new THREE.Vector3(-1, 0, 0),
-        up: new THREE.Vector3(0, 1, 0)
+        dir: new THREE.Vector3(0, -1, 0),
+        up: new THREE.Vector3(0, 0, 1)
       }
     };
 
