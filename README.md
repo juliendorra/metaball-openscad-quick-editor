@@ -2,6 +2,10 @@
 
 A browser-only metaball sketchpad that outputs BOSL2-friendly OpenSCAD code.
 
+## Why?
+
+Having metaballs in OpenSCAD thanks to BOSL2 is great, but editing them in code is not.
+
 ## How to
 - Clone or download this repo.
 - Serve the folder statically (for example: `python -m http.server 8000`) or open `index.html` directly in a modern browser.
