@@ -634,16 +634,27 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
   let axisBounds = computeAxisBounds();
   const interactionState = {
     fastMode: false,
-    fullQualityTimer: null
+    fullQualityTimer: null,
+    autoFastMode: false
   };
+
+  const perfMonitor = {
+    lastFrameTime: performance.now(),
+    slowFrames: 0,
+    fastFrames: 0
+  };
+
+  function isFastMode() {
+    return interactionState.fastMode || interactionState.autoFastMode;
+  }
 
   function currentResolution() {
     const base = Math.max(10, parseInt(resolutionInput.value, 10) || 120);
-    return interactionState.fastMode ? Math.max(10, Math.round(base * 0.35)) : base;
+    return isFastMode() ? Math.max(10, Math.round(base * 0.35)) : base;
   }
 
   function currentSamples(defaultSamples, fastSamples) {
-    return interactionState.fastMode ? fastSamples : defaultSamples;
+    return isFastMode() ? fastSamples : defaultSamples;
   }
 
   function clearFullQualityTimer() {
@@ -811,7 +822,7 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
       extent,
       bounds,
       iso,
-      fast: interactionState.fastMode
+      fast: isFastMode()
     });
   }
 
@@ -889,10 +900,38 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
     if (interactionState.fastMode && !deferFullRedraw) {
       scheduleFullQualityRedraw();
     }
+    trackPerf();
   }
 
   let pendingRender = null;
   let pendingRenderOptions = null;
+
+  function trackPerf() {
+    const now = performance.now();
+    const delta = now - perfMonitor.lastFrameTime;
+    perfMonitor.lastFrameTime = now;
+    const slowThreshold = 28; // ~35 fps
+    const fastThreshold = 16; // ~60 fps
+
+    if (delta > slowThreshold) {
+      perfMonitor.slowFrames = Math.min(perfMonitor.slowFrames + 1, 20);
+      perfMonitor.fastFrames = Math.max(0, perfMonitor.fastFrames - 1);
+    } else if (delta < fastThreshold) {
+      perfMonitor.fastFrames = Math.min(perfMonitor.fastFrames + 1, 30);
+      perfMonitor.slowFrames = Math.max(0, perfMonitor.slowFrames - 1);
+    } else {
+      perfMonitor.slowFrames = Math.max(0, perfMonitor.slowFrames - 1);
+    }
+
+    if (!interactionState.autoFastMode && perfMonitor.slowFrames >= 4) {
+      interactionState.autoFastMode = true;
+      requestRender({ deferFullRedraw: true });
+    } else if (interactionState.autoFastMode && perfMonitor.fastFrames >= 12) {
+      interactionState.autoFastMode = false;
+      perfMonitor.slowFrames = 0;
+      requestRender({ deferFullRedraw: true });
+    }
+  }
 
   function flushPendingRender() {
     if (pendingRender !== null) {
