@@ -1,6 +1,6 @@
 import { editorState } from './state.js';
-import * as THREE from 'https://unpkg.com/three@0.160.0/build/three.module.js?module';
-import { OrbitControls } from 'https://unpkg.com/three@0.160.0/examples/jsm/controls/OrbitControls.js?module';
+import * as THREE from 'three';
+import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 
 const PREVIEW_SHADER_BALL_LIMIT = 64;
 const PREVIEW_SHADER_MAX_STEPS = 160;
