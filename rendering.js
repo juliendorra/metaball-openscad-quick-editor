@@ -7,6 +7,7 @@ const PREVIEW_SHADER_MAX_STEPS = 160;
 const PREVIEW_SHADER_MAX_HITS = 10;
 const SLICE_SHADER_BALL_LIMIT = 128;
 const SLICE_SHADER_MAX_SAMPLES = 64;
+const PREVIEW_AO_MAX_SAMPLES = 16;
 
 const PREVIEW_VERTEX_SHADER = `
   varying vec2 vUv;
@@ -22,6 +23,7 @@ const PREVIEW_FRAGMENT_SHADER = `
   #define MAX_SHADER_BALLS ${PREVIEW_SHADER_BALL_LIMIT}
   #define MAX_MARCH_STEPS ${PREVIEW_SHADER_MAX_STEPS}
   #define MAX_RAY_HITS ${PREVIEW_SHADER_MAX_HITS}
+  #define MAX_AO_SAMPLES ${PREVIEW_AO_MAX_SAMPLES}
 
   uniform mat4 viewMatrixInverse;
   uniform mat4 projectionMatrixInverse;
@@ -35,6 +37,9 @@ const PREVIEW_FRAGMENT_SHADER = `
   uniform vec3 lightDir;
   uniform vec3 colorPositive;
   uniform vec3 colorNegative;
+  uniform int aoSamples;
+  uniform float aoRadius;
+  uniform float aoStrength;
 
   varying vec2 vUv;
 
@@ -96,6 +101,45 @@ const PREVIEW_FRAGMENT_SHADER = `
     return vec3(viewMatrixInverse[3][0], viewMatrixInverse[3][1], viewMatrixInverse[3][2]);
   }
 
+  vec3 safeNormalize(vec3 v) {
+    float len = length(v);
+    if (len < 1e-4) return vec3(1.0, 0.0, 0.0);
+    return v / len;
+  }
+
+  void orthonormalBasis(vec3 n, out vec3 t, out vec3 b) {
+    vec3 up = abs(n.z) < 0.9 ? vec3(0.0, 0.0, 1.0) : vec3(0.0, 1.0, 0.0);
+    t = safeNormalize(cross(up, n));
+    b = cross(n, t);
+  }
+
+  float computeAO(vec3 p, vec3 normal, int componentIndex) {
+    int samples = max(1, aoSamples);
+    float radius = max(0.25, aoRadius);
+    vec3 n = safeNormalize(normal);
+    vec3 t;
+    vec3 b;
+    orthonormalBasis(n, t, b);
+    float occ = 0.0;
+    for (int i = 0; i < MAX_AO_SAMPLES; i++) {
+      if (i >= samples) break;
+      float u1 = rand(vec2(p.x + float(i) * 12.7, p.y - float(i) * 3.1));
+      float u2 = rand(vec2(p.z + float(i) * 5.3, p.x + float(i) * 1.9));
+      float phi = 6.2831853 * u1;
+      float cosTheta = mix(0.25, 1.0, u2);
+      float sinTheta = sqrt(max(0.0, 1.0 - cosTheta * cosTheta));
+      vec3 dir = normalize(t * cos(phi) * sinTheta + b * sin(phi) * sinTheta + n * cosTheta);
+      float jitter = rand(vec2(u1, u2 + float(i) * 0.37));
+      float dist = radius * mix(0.35, 1.0, jitter);
+      vec3 sp = p + dir * dist;
+      FieldSample s = sampleField(sp);
+      float fieldVal = componentValue(s, componentIndex) - isoLevel;
+      occ += fieldVal > 0.0 ? 1.0 : 0.0;
+    }
+    float occlusion = occ / float(samples);
+    return clamp(occlusion, 0.0, 1.0);
+  }
+
   bool intersectBox(vec3 ro, vec3 rd, vec3 bMin, vec3 bMax, out float tNear, out float tFar) {
     vec3 inv = 1.0 / rd;
     vec3 t0 = (bMin - ro) * inv;
@@ -132,7 +176,9 @@ const PREVIEW_FRAGMENT_SHADER = `
     float fresnel = pow(1.0 - max(dot(normal, viewDir), 0.0), 1.8);
     float ambient = 0.6;
     float diffuse = ambient + 0.4 * ndotl;
-    vec3 color = baseColor * diffuse + fresnel * 0.12 * baseColor;
+    float occlusion = computeAO(hitPos, normal, componentIndex);
+    float aoTerm = mix(1.0, 1.0 - occlusion, clamp(aoStrength, 0.0, 1.0));
+    vec3 color = (baseColor * diffuse + fresnel * 0.12 * baseColor) * aoTerm;
     float alpha = componentIndex == 1 ? 0.4 : 1.0;
     return vec4(color, alpha);
   }
@@ -546,8 +592,11 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
       lightDir: { value: new THREE.Vector3(0.6, 0.8, 0.3).normalize() },
       viewMatrixInverse: { value: new THREE.Matrix4() },
       projectionMatrixInverse: { value: new THREE.Matrix4() },
-      colorPositive: { value: new THREE.Color(0x5a93d6) },
-      colorNegative: { value: new THREE.Color(0xd45500) }
+      colorPositive: { value: new THREE.Color(0x7fb3f0) },
+      colorNegative: { value: new THREE.Color(0xd45500) },
+      aoSamples: { value: 8 },
+      aoRadius: { value: 10 },
+      aoStrength: { value: 0.6 }
     };
 
     const quadGeometry = new THREE.PlaneGeometry(2, 2);
@@ -635,6 +684,18 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
       const clamped = Math.max(0.5, Math.min(1, safeFactor));
       const steps = Math.round(48 + (96 - 48) * clamped);
       raymarchUniforms.marchSteps.value = steps;
+      setAOQuality(clamped);
+    }
+
+    function setAOQuality(factor) {
+      const clamped = Math.max(0.0, Math.min(1, factor));
+      const aoMinSamples = 4;
+      const aoMaxSamples = PREVIEW_AO_MAX_SAMPLES;
+      const samples = Math.round(aoMinSamples + (aoMaxSamples - aoMinSamples) * clamped);
+      const radius = 8 + (16 - 8) * clamped;
+      raymarchUniforms.aoSamples.value = samples;
+      raymarchUniforms.aoRadius.value = radius;
+      raymarchUniforms.aoStrength.value = 0.6;
     }
 
     function syncCameraUniforms() {
@@ -895,17 +956,17 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
     const samples = computeSliceSamples(axisRange);
     const slice = sliceRenderer.isSupported()
       ? sliceRenderer.renderSlice(view, {
-          width,
-          height,
-          resolution,
-          offsetX: viewStateEntry.offsetX,
-          offsetY: viewStateEntry.offsetY,
-          zoom: viewStateEntry.zoom,
-          axisRange,
-          iso,
-          samples,
-          balls: editorState.balls
-        })
+        width,
+        height,
+        resolution,
+        offsetX: viewStateEntry.offsetX,
+        offsetY: viewStateEntry.offsetY,
+        zoom: viewStateEntry.zoom,
+        axisRange,
+        iso,
+        samples,
+        balls: editorState.balls
+      })
       : null;
     ctx.save();
     ctx.setTransform(1, 0, 0, 1, 0, 0);
