@@ -869,7 +869,7 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
   };
 
   function qualityFactor() {
-    return Math.max(0.5, Math.min(1, interactionState.qualityScale || 1));
+    return Math.max(0.25, Math.min(1, interactionState.qualityScale || 1));
   }
 
   function currentResolution(canvas) {
@@ -930,7 +930,7 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
 
   function beginFastRender() {
     clearFullQualityTimer();
-    // quality now adapts based on measured frame time; no forced drop here
+    interactionState.qualityScale = Math.min(interactionState.qualityScale, 0.4);
   }
 
   function endFastRender({ immediate = false } = {}) {
@@ -1195,7 +1195,10 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
     const alpha = 0.12;
     perfMonitor.smoothedDelta = perfMonitor.smoothedDelta * (1 - alpha) + delta * alpha;
     const target = 16.67;
-    const proposedScale = Math.max(0.5, Math.min(1, target / Math.max(8, perfMonitor.smoothedDelta)));
+    const proposedScale = Math.max(0.25, Math.min(1, target / Math.max(8, perfMonitor.smoothedDelta)));
+    if (delta > target * 2.2) {
+      interactionState.qualityScale = Math.min(interactionState.qualityScale, 0.35);
+    }
     const blend = 0.18;
     interactionState.qualityScale = interactionState.qualityScale * (1 - blend) + proposedScale * blend;
   }
