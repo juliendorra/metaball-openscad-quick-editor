@@ -383,6 +383,59 @@ void main() {
 }
 `;
 
+const SLICE_FXAA_FRAGMENT_SHADER = `#version 300 es
+precision highp float;
+
+in vec2 vUv;
+out vec4 fragColor;
+
+uniform sampler2D uScene;
+uniform vec2 uInvResolution;
+
+vec3 fxaa(sampler2D tex, vec2 uv, vec2 invRes) {
+  vec3 rgbNW = texture(tex, uv + vec2(-1.0, -1.0) * invRes).rgb;
+  vec3 rgbNE = texture(tex, uv + vec2(1.0, -1.0) * invRes).rgb;
+  vec3 rgbSW = texture(tex, uv + vec2(-1.0, 1.0) * invRes).rgb;
+  vec3 rgbSE = texture(tex, uv + vec2(1.0, 1.0) * invRes).rgb;
+  vec3 rgbM  = texture(tex, uv).rgb;
+
+  vec3 luma = vec3(0.299, 0.587, 0.114);
+  float lumaNW = dot(rgbNW, luma);
+  float lumaNE = dot(rgbNE, luma);
+  float lumaSW = dot(rgbSW, luma);
+  float lumaSE = dot(rgbSE, luma);
+  float lumaM  = dot(rgbM,  luma);
+
+  float lumaMin = min(lumaM, min(min(lumaNW, lumaNE), min(lumaSW, lumaSE)));
+  float lumaMax = max(lumaM, max(max(lumaNW, lumaNE), max(lumaSW, lumaSE)));
+
+  vec2 dir;
+  dir.x = -((lumaNW + lumaNE) - (lumaSW + lumaSE));
+  dir.y =  ((lumaNW + lumaSW) - (lumaNE + lumaSE));
+
+  float dirReduce = max((lumaNW + lumaNE + lumaSW + lumaSE) * 0.03125, 0.0078125);
+  float rcpDirMin = 1.0 / (min(abs(dir.x), abs(dir.y)) + dirReduce);
+  dir = clamp(dir * rcpDirMin * 0.5, vec2(-8.0), vec2(8.0)) * invRes;
+
+  vec3 rgbA = 0.5 * (
+    texture(tex, uv + dir * (1.0 / 3.0 - 0.5)).rgb +
+    texture(tex, uv + dir * (2.0 / 3.0 - 0.5)).rgb);
+  vec3 rgbB = rgbA * 0.5 + 0.25 * (
+    texture(tex, uv + dir * -0.5).rgb +
+    texture(tex, uv + dir * 0.5).rgb);
+
+  float lumaB = dot(rgbB, luma);
+  if (lumaB < lumaMin || lumaB > lumaMax) {
+    return rgbA;
+  }
+  return rgbB;
+}
+
+void main() {
+  fragColor = vec4(fxaa(uScene, vUv, uInvResolution), 1.0);
+}
+`;
+
 export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, thresholdInput, resolutionInput }) {
   const xyCtx = xyCanvas.getContext('2d');
   const xzCtx = xzCanvas.getContext('2d');
@@ -423,6 +476,7 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
       glContexts[view] = gl;
       if (!gl) return null;
       const program = createProgram(gl, SLICE_VERTEX_SHADER, SLICE_FRAGMENT_SHADER);
+      const fxaaProgram = createProgram(gl, SLICE_VERTEX_SHADER, SLICE_FXAA_FRAGMENT_SHADER);
       if (!program) return gl;
       supported = true;
       const attribBuf = gl.createBuffer();
@@ -449,7 +503,14 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
         colorPositive: gl.getUniformLocation(program, 'uColorPositive'),
         colorNegative: gl.getUniformLocation(program, 'uColorNegative')
       };
-      glResources[view] = { program, attribBuf, uniforms };
+      const fxaaUniforms = fxaaProgram
+        ? {
+            position: gl.getAttribLocation(fxaaProgram, 'position'),
+            scene: gl.getUniformLocation(fxaaProgram, 'uScene'),
+            invResolution: gl.getUniformLocation(fxaaProgram, 'uInvResolution')
+          }
+        : null;
+      glResources[view] = { program, fxaaProgram, attribBuf, uniforms, fxaaUniforms, fbo: null, colorTex: null, fboSize: { w: 0, h: 0 } };
       return gl;
     }
 
@@ -474,6 +535,28 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
         console.warn(gl.getProgramInfoLog(prog));
       }
       return prog;
+    }
+
+    function ensureRenderTarget(gl, resources, width, height) {
+      if (!resources) return;
+      const needsResize = !resources.fbo || resources.fboSize.w !== width || resources.fboSize.h !== height;
+      if (!needsResize) return;
+      if (!resources.fbo) {
+        resources.fbo = gl.createFramebuffer();
+        resources.colorTex = gl.createTexture();
+      }
+      gl.bindTexture(gl.TEXTURE_2D, resources.colorTex);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, resources.fbo);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, resources.colorTex, 0);
+      resources.fboSize.w = width;
+      resources.fboSize.h = height;
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.bindTexture(gl.TEXTURE_2D, null);
     }
 
     function renderSlice(view, options) {
@@ -501,7 +584,11 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
       canvas.height = Math.max(1, resolution);
       gl.viewport(0, 0, canvas.width, canvas.height);
 
-      const { program, attribBuf, uniforms } = resources;
+      const { program, fxaaProgram, attribBuf, uniforms, fxaaUniforms } = resources;
+
+      ensureRenderTarget(gl, resources, canvas.width, canvas.height);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, resources.fbo);
+
       gl.useProgram(program);
       gl.bindBuffer(gl.ARRAY_BUFFER, attribBuf);
       gl.enableVertexAttribArray(uniforms.position);
@@ -536,6 +623,20 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
       gl.clearColor(0, 0, 0, 0);
       gl.clear(gl.COLOR_BUFFER_BIT);
       gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+      if (fxaaProgram && fxaaUniforms) {
+        gl.useProgram(fxaaProgram);
+        gl.bindBuffer(gl.ARRAY_BUFFER, attribBuf);
+        gl.enableVertexAttribArray(fxaaUniforms.position);
+        gl.vertexAttribPointer(fxaaUniforms.position, 2, gl.FLOAT, false, 0, 0);
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, resources.colorTex);
+        gl.uniform1i(fxaaUniforms.scene, 0);
+        gl.uniform2f(fxaaUniforms.invResolution, 1 / canvas.width, 1 / canvas.height);
+        gl.drawArrays(gl.TRIANGLES, 0, 6);
+      }
       return canvas;
     }
 
@@ -950,20 +1051,24 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
 
     const iso = parseFloat(thresholdInput.value) || 1;
     const resolution = currentResolution(canvas);
+    const quality = qualityFactor();
+    const isHighQuality = quality > 0.9;
+    const oversample = isHighQuality ? 1.6 : 1;
+    const renderResolution = Math.max(10, Math.round(resolution * oversample));
     const missingAxis = view === 'xy' ? 'z' : view === 'xz' ? 'y' : 'x';
     const viewStateEntry = viewState[view];
     const axisRange = axisBounds[missingAxis];
     const samples = computeSliceSamples(axisRange);
     const slice = sliceRenderer.isSupported()
       ? sliceRenderer.renderSlice(view, {
-        width,
-        height,
-        resolution,
-        offsetX: viewStateEntry.offsetX,
-        offsetY: viewStateEntry.offsetY,
-        zoom: viewStateEntry.zoom,
-        axisRange,
-        iso,
+          width,
+          height,
+          resolution: renderResolution,
+          offsetX: viewStateEntry.offsetX,
+          offsetY: viewStateEntry.offsetY,
+          zoom: viewStateEntry.zoom,
+          axisRange,
+          iso,
         samples,
         balls: editorState.balls
       })
@@ -973,11 +1078,11 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
     ctx.clearRect(0, 0, width, height);
     ctx.fillStyle = '#fff';
     ctx.fillRect(0, 0, width, height);
-    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingEnabled = isHighQuality;
     if (slice) {
       ctx.drawImage(slice, 0, 0, slice.width, slice.height, 0, 0, width, height);
     } else {
-      drawIsosurfaceCpu(ctx, view, iso, resolution, samples, axisRange, width, height);
+      drawIsosurfaceCpu(ctx, view, iso, renderResolution, samples, axisRange, width, height);
     }
     ctx.restore();
   }
