@@ -827,6 +827,29 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
     return Math.max(1, Math.round(value));
   }
 
+  function smallestBallRadius() {
+    if (!editorState.balls.length) return 10;
+    let min = Infinity;
+    for (const ball of editorState.balls) {
+      const r = Math.max(0.001, Number(ball.r) || 0);
+      if (r < min) {
+        min = r;
+      }
+    }
+    return Math.max(1, min);
+  }
+
+  function computeSliceSamples(axisRange) {
+    // Sample more densely along the missing axis so thin connections are not skipped.
+    const span = Math.max(1, axisRange.max - axisRange.min);
+    const base = currentSamples(14, 6);
+    const minRadius = smallestBallRadius();
+    const quality = qualityFactor();
+    const targetStep = Math.max(1.5, (minRadius * 0.45) / quality);
+    const adaptive = Math.ceil(span / targetStep);
+    return Math.min(SLICE_SHADER_MAX_SAMPLES, Math.max(base, adaptive));
+  }
+
   function clearFullQualityTimer() {
     if (interactionState.fullQualityTimer !== null) {
       clearTimeout(interactionState.fullQualityTimer);
@@ -867,9 +890,9 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
     const iso = parseFloat(thresholdInput.value) || 1;
     const resolution = currentResolution(canvas);
     const missingAxis = view === 'xy' ? 'z' : view === 'xz' ? 'y' : 'x';
-    const samples = currentSamples(6, 2);
     const viewStateEntry = viewState[view];
     const axisRange = axisBounds[missingAxis];
+    const samples = computeSliceSamples(axisRange);
     const slice = sliceRenderer.isSupported()
       ? sliceRenderer.renderSlice(view, {
           width,
