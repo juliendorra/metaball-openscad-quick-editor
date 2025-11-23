@@ -5,6 +5,8 @@ import { OrbitControls } from 'https://unpkg.com/three@0.160.0/examples/jsm/cont
 const PREVIEW_SHADER_BALL_LIMIT = 64;
 const PREVIEW_SHADER_MAX_STEPS = 160;
 const PREVIEW_SHADER_MAX_HITS = 10;
+const SLICE_SHADER_BALL_LIMIT = 128;
+const SLICE_SHADER_MAX_SAMPLES = 64;
 
 const PREVIEW_VERTEX_SHADER = `
   varying vec2 vUv;
@@ -224,41 +226,121 @@ const PREVIEW_FRAGMENT_SHADER = `
   }
 `;
 
+const SLICE_VERTEX_SHADER = `#version 300 es
+in vec2 position;
+out vec2 vUv;
+void main() {
+  vUv = position * 0.5 + 0.5;
+  gl_Position = vec4(position, 0.0, 1.0);
+}
+`;
+
+const SLICE_FRAGMENT_SHADER = `#version 300 es
+precision highp float;
+
+#define MAX_SLICE_BALLS ${SLICE_SHADER_BALL_LIMIT}
+#define MAX_SLICE_SAMPLES ${SLICE_SHADER_MAX_SAMPLES}
+
+uniform vec2 uCanvasSize;
+uniform vec2 uOffset;
+uniform float uZoom;
+uniform vec2 uAxisRange;
+uniform float uIso;
+uniform int uSamples;
+uniform int uBallCount;
+uniform vec4 uBallData[MAX_SLICE_BALLS]; // x,y,z,rSigned
+uniform int uViewMode; // 0=xy,1=xz,2=yz
+uniform vec3 uColorPositive;
+uniform vec3 uColorNegative;
+
+in vec2 vUv;
+out vec4 fragColor;
+
+struct FieldSample {
+  float total;
+  float negative;
+};
+
+FieldSample sampleField(vec3 p) {
+  FieldSample f;
+  f.total = 0.0;
+  f.negative = 0.0;
+  for (int i = 0; i < MAX_SLICE_BALLS; i++) {
+    if (i >= uBallCount) break;
+    vec4 ball = uBallData[i];
+    if (ball.w == 0.0) continue;
+    vec3 diff = p - ball.xyz;
+    float dist = length(diff);
+    dist = max(dist, 0.0001);
+    float contrib = abs(ball.w) / dist;
+    if (ball.w < 0.0) {
+      f.negative += contrib;
+      f.total -= contrib;
+    } else {
+      f.total += contrib;
+    }
+  }
+  return f;
+}
+
+vec2 screenToWorld(vec2 fragCoord) {
+  float x = (fragCoord.x - 0.5 * uCanvasSize.x) / uZoom - uOffset.x;
+  float y = (0.5 * uCanvasSize.y - fragCoord.y) / uZoom - uOffset.y;
+  return vec2(x, y);
+}
+
+void main() {
+  vec2 fragCoord = vec2(vUv.x * uCanvasSize.x, vUv.y * uCanvasSize.y);
+  vec2 plane = screenToWorld(fragCoord);
+
+  bool exceedsPositive = false;
+  bool exceedsNegative = false;
+
+  for (int si = 0; si < MAX_SLICE_SAMPLES; si++) {
+    if (si >= uSamples) break;
+    float t = (uSamples == 1) ? 0.5 : float(si) / float(uSamples - 1);
+    float axisValue = mix(uAxisRange.x, uAxisRange.y, t);
+    vec3 p;
+    if (uViewMode == 0) { // xy
+      p = vec3(plane.x, plane.y, axisValue);
+    } else if (uViewMode == 1) { // xz
+      p = vec3(plane.x, axisValue, plane.y);
+    } else { // yz
+      p = vec3(axisValue, plane.y, plane.x);
+    }
+
+    FieldSample sample = sampleField(p);
+    if (sample.total >= uIso) {
+      exceedsPositive = true;
+    }
+    if (sample.negative >= uIso) {
+      exceedsNegative = true;
+    }
+    if (exceedsPositive && exceedsNegative) break;
+  }
+
+  if (!exceedsPositive && !exceedsNegative) {
+    fragColor = vec4(0.0);
+    return;
+  }
+
+  float alpha = 200.0 / 255.0;
+  vec3 color;
+  if (exceedsPositive && exceedsNegative) {
+    color = (uColorPositive + uColorNegative) * 0.5;
+  } else if (exceedsPositive) {
+    color = uColorPositive;
+  } else {
+    color = uColorNegative;
+  }
+  fragColor = vec4(color, alpha);
+}
+`;
+
 export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, thresholdInput, resolutionInput }) {
   const xyCtx = xyCanvas.getContext('2d');
   const xzCtx = xzCanvas.getContext('2d');
   const yzCtx = yzCanvas.getContext('2d');
-
-  const MAX_BALLS = 128;
-
-  const ballCache = {
-    xs: new Float32Array(0),
-    ys: new Float32Array(0),
-    zs: new Float32Array(0),
-    rs: new Float32Array(0),
-    negative: new Uint8Array(0),
-    count: 0
-  };
-
-  function refreshBallCache() {
-    const count = Math.min(editorState.balls.length, MAX_BALLS);
-    if (ballCache.count !== count || ballCache.xs.length < count) {
-      ballCache.xs = new Float32Array(count);
-      ballCache.ys = new Float32Array(count);
-      ballCache.zs = new Float32Array(count);
-      ballCache.rs = new Float32Array(count);
-      ballCache.negative = new Uint8Array(count);
-    }
-    for (let i = 0; i < count; i++) {
-      const ball = editorState.balls[i];
-      ballCache.xs[i] = ball.x;
-      ballCache.ys[i] = ball.y;
-      ballCache.zs[i] = ball.z;
-      ballCache.rs[i] = ball.r;
-      ballCache.negative[i] = ball.negative ? 1 : 0;
-    }
-    ballCache.count = count;
-  }
 
   function resizeCanvases() {
     [xyCanvas, xzCanvas, yzCanvas].forEach(canvas => {
@@ -278,25 +360,145 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
     yz: { offsetX: 0, offsetY: 0, zoom: 1 }
   };
 
-  const isoSurfaceBuffers = {
-    xy: createIsoBuffer(),
-    xz: createIsoBuffer(),
-    yz: createIsoBuffer()
-  };
+  const sliceRenderer = createSliceRenderer();
 
   const previewViewport = createThreePreview(previewCanvas);
+  function createSliceRenderer() {
+    const glCanvases = { xy: null, xz: null, yz: null };
+    const glContexts = { xy: null, xz: null, yz: null };
+    const glResources = { xy: null, xz: null, yz: null };
+    let supported = false;
 
-  function createIsoBuffer() {
-    const canvas = document.createElement('canvas');
-    const ctx = canvas.getContext('2d', { willReadFrequently: true }) || canvas.getContext('2d');
+    function initContext(view) {
+      if (glContexts[view]) return glContexts[view];
+      const canvas = document.createElement('canvas');
+      const gl = canvas.getContext('webgl2', { antialias: false, premultipliedAlpha: false });
+      glCanvases[view] = canvas;
+      glContexts[view] = gl;
+      if (!gl) return null;
+      const program = createProgram(gl, SLICE_VERTEX_SHADER, SLICE_FRAGMENT_SHADER);
+      if (!program) return gl;
+      supported = true;
+      const attribBuf = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, attribBuf);
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+        -1, -1,
+        1, -1,
+        -1, 1,
+        -1, 1,
+        1, -1,
+        1, 1
+      ]), gl.STATIC_DRAW);
+      const uniforms = {
+        position: gl.getAttribLocation(program, 'position'),
+        canvasSize: gl.getUniformLocation(program, 'uCanvasSize'),
+        offset: gl.getUniformLocation(program, 'uOffset'),
+        zoom: gl.getUniformLocation(program, 'uZoom'),
+        axisRange: gl.getUniformLocation(program, 'uAxisRange'),
+        iso: gl.getUniformLocation(program, 'uIso'),
+        ballCount: gl.getUniformLocation(program, 'uBallCount'),
+        ballData: gl.getUniformLocation(program, 'uBallData'),
+        samples: gl.getUniformLocation(program, 'uSamples'),
+        viewMode: gl.getUniformLocation(program, 'uViewMode'),
+        colorPositive: gl.getUniformLocation(program, 'uColorPositive'),
+        colorNegative: gl.getUniformLocation(program, 'uColorNegative')
+      };
+      glResources[view] = { program, attribBuf, uniforms };
+      return gl;
+    }
+
+    function createProgram(gl, vsSource, fsSource) {
+      const vs = gl.createShader(gl.VERTEX_SHADER);
+      gl.shaderSource(vs, vsSource);
+      gl.compileShader(vs);
+      if (!gl.getShaderParameter(vs, gl.COMPILE_STATUS)) {
+        console.warn(gl.getShaderInfoLog(vs));
+      }
+      const fs = gl.createShader(gl.FRAGMENT_SHADER);
+      gl.shaderSource(fs, fsSource);
+      gl.compileShader(fs);
+      if (!gl.getShaderParameter(fs, gl.COMPILE_STATUS)) {
+        console.warn(gl.getShaderInfoLog(fs));
+      }
+      const prog = gl.createProgram();
+      gl.attachShader(prog, vs);
+      gl.attachShader(prog, fs);
+      gl.linkProgram(prog);
+      if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+        console.warn(gl.getProgramInfoLog(prog));
+      }
+      return prog;
+    }
+
+    function renderSlice(view, options) {
+      const gl = initContext(view);
+      const resources = glResources[view];
+      if (!gl || !resources || !resources.program || gl.isContextLost()) {
+        supported = false;
+        return null;
+      }
+      const canvas = glCanvases[view];
+      const {
+        width,
+        height,
+        resolution,
+        offsetX,
+        offsetY,
+        zoom,
+        axisRange,
+        iso,
+        samples,
+        balls
+      } = options;
+
+      canvas.width = Math.max(1, resolution);
+      canvas.height = Math.max(1, resolution);
+      gl.viewport(0, 0, canvas.width, canvas.height);
+
+      const { program, attribBuf, uniforms } = resources;
+      gl.useProgram(program);
+      gl.bindBuffer(gl.ARRAY_BUFFER, attribBuf);
+      gl.enableVertexAttribArray(uniforms.position);
+      gl.vertexAttribPointer(uniforms.position, 2, gl.FLOAT, false, 0, 0);
+
+      gl.uniform2f(uniforms.canvasSize, width, height);
+      gl.uniform2f(uniforms.offset, offsetX, offsetY);
+      gl.uniform1f(uniforms.zoom, zoom);
+      gl.uniform2f(uniforms.axisRange, axisRange.min, axisRange.max);
+      gl.uniform1f(uniforms.iso, iso);
+      gl.uniform1i(uniforms.samples, Math.min(samples, SLICE_SHADER_MAX_SAMPLES));
+      gl.uniform1i(uniforms.viewMode, view === 'xy' ? 0 : view === 'xz' ? 1 : 2);
+
+      const count = Math.min(balls.length, SLICE_SHADER_BALL_LIMIT);
+      const ballData = new Float32Array(SLICE_SHADER_BALL_LIMIT * 4);
+      for (let i = 0; i < count; i++) {
+        const b = balls[i];
+        const radius = Math.max(0.001, Number(b.r) || 0);
+        ballData[i * 4 + 0] = Number(b.x) || 0;
+        ballData[i * 4 + 1] = Number(b.y) || 0;
+        ballData[i * 4 + 2] = Number(b.z) || 0;
+        ballData[i * 4 + 3] = b.negative ? -radius : radius;
+      }
+      gl.uniform1i(uniforms.ballCount, count);
+      gl.uniform4fv(uniforms.ballData, ballData);
+      gl.uniform3f(uniforms.colorPositive, 70 / 255, 130 / 255, 180 / 255);
+      gl.uniform3f(uniforms.colorNegative, 230 / 255, 110 / 255, 30 / 255);
+
+      gl.disable(gl.DEPTH_TEST);
+      gl.disable(gl.CULL_FACE);
+      gl.colorMask(true, true, true, true);
+      gl.clearColor(0, 0, 0, 0);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+      gl.drawArrays(gl.TRIANGLES, 0, 6);
+      return canvas;
+    }
+
     return {
-      canvas,
-      ctx,
-      width: 0,
-      height: 0,
-      imageData: null
+      renderSlice,
+      isSupported: () => supported
     };
   }
+
 
   function createThreePreview(container) {
     if (!container) return null;
@@ -428,8 +630,11 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
       raymarchUniforms.boundsSize.value.set(bMax.x - bMin.x, bMax.y - bMin.y, bMax.z - bMin.z);
     }
 
-    function setQuality(fast) {
-      raymarchUniforms.marchSteps.value = fast ? 48 : 96;
+    function setQuality(factor) {
+      const safeFactor = Number.isFinite(factor) ? factor : 1;
+      const clamped = Math.max(0.5, Math.min(1, safeFactor));
+      const steps = Math.round(48 + (96 - 48) * clamped);
+      raymarchUniforms.marchSteps.value = steps;
     }
 
     function syncCameraUniforms() {
@@ -485,7 +690,7 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
       updateBallUniforms(balls);
       updateBoundsUniform(bounds);
       raymarchUniforms.isoLevel.value = iso || 1;
-      setQuality(Boolean(fast));
+      setQuality(typeof fast === 'number' ? fast : qualityFactor());
 
       if (!initialized) {
         lastCenter.copy(tempCenter);
@@ -512,24 +717,6 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
       render
     };
   }
-
-  function getIsoBuffer(view, width, height) {
-    const buffer = isoSurfaceBuffers[view] || createIsoBuffer();
-    if (!isoSurfaceBuffers[view]) {
-      isoSurfaceBuffers[view] = buffer;
-    }
-    const targetWidth = Math.max(1, Math.round(width));
-    const targetHeight = Math.max(1, Math.round(height));
-    if (buffer.width !== targetWidth || buffer.height !== targetHeight) {
-      buffer.canvas.width = targetWidth;
-      buffer.canvas.height = targetHeight;
-      buffer.imageData = buffer.ctx.createImageData(targetWidth, targetHeight);
-      buffer.width = targetWidth;
-      buffer.height = targetHeight;
-    }
-    return buffer;
-  }
-
 
   function worldToScreenXY(x, y) {
     const { offsetX, offsetY, zoom } = viewState.xy;
@@ -579,28 +766,6 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
     };
   }
 
-  function fieldComponents(wx, wy, wz) {
-    let positive = 0;
-    let negative = 0;
-    let value = 0;
-    const { xs, ys, zs, rs, negative: negFlags, count } = ballCache;
-    for (let i = 0; i < count; i++) {
-      const dx = wx - xs[i];
-      const dy = wy - ys[i];
-      const dz = wz - zs[i];
-      const dist = Math.hypot(dx, dy, dz);
-      const contrib = dist === 0 ? 1e9 : rs[i] / dist;
-      if (negFlags[i]) {
-        negative += contrib;
-        value -= contrib;
-      } else {
-        positive += contrib;
-        value += contrib;
-      }
-    }
-    return { total: value, positive, negative };
-  }
-
   function computeAxisBounds() {
     if (!editorState.balls.length) {
       return {
@@ -633,28 +798,33 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
 
   let axisBounds = computeAxisBounds();
   const interactionState = {
-    fastMode: false,
-    fullQualityTimer: null,
-    autoFastMode: false
+    qualityScale: 1,
+    fullQualityTimer: null
   };
 
   const perfMonitor = {
     lastFrameTime: performance.now(),
-    slowFrames: 0,
-    fastFrames: 0
+    smoothedDelta: 16.7
   };
 
-  function isFastMode() {
-    return interactionState.fastMode || interactionState.autoFastMode;
+  function qualityFactor() {
+    return Math.max(0.5, Math.min(1, interactionState.qualityScale || 1));
   }
 
-  function currentResolution() {
-    const base = Math.max(10, parseInt(resolutionInput.value, 10) || 120);
-    return isFastMode() ? Math.max(10, Math.round(base * 0.35)) : base;
+  function currentResolution(canvas) {
+    const userBase = Math.max(10, parseInt(resolutionInput.value, 10) || 120);
+    const base = Math.max(userBase, Math.max(canvas?.width || 0, canvas?.height || 0) * 0.75);
+    const capped = Math.min(640, base);
+    const scale = qualityFactor();
+    return Math.max(10, Math.round(capped * scale));
   }
 
-  function currentSamples(defaultSamples, fastSamples) {
-    return isFastMode() ? fastSamples : defaultSamples;
+  function currentSamples(maxSamples, minSamples) {
+    const scale = qualityFactor();
+    const hi = Math.max(1, maxSamples);
+    const lo = Math.max(1, Math.min(minSamples, hi));
+    const value = lo + (hi - lo) * scale;
+    return Math.max(1, Math.round(value));
   }
 
   function clearFullQualityTimer() {
@@ -668,23 +838,20 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
     clearFullQualityTimer();
     interactionState.fullQualityTimer = setTimeout(() => {
       interactionState.fullQualityTimer = null;
-      interactionState.fastMode = false;
+      interactionState.qualityScale = Math.min(1, interactionState.qualityScale + 0.1);
       flushPendingRender();
       renderInternal({ deferFullRedraw: true });
-    }, 150);
+    }, 120);
   }
 
   function beginFastRender() {
-    if (!interactionState.fastMode) {
-      interactionState.fastMode = true;
-    }
     clearFullQualityTimer();
+    // quality now adapts based on measured frame time; no forced drop here
   }
 
   function endFastRender({ immediate = false } = {}) {
     if (immediate) {
       clearFullQualityTimer();
-      interactionState.fastMode = false;
       flushPendingRender();
       renderInternal({ deferFullRedraw: true });
     } else {
@@ -692,37 +859,67 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
     }
   }
 
-  function drawIsosurface(ctx, canvas, view, sampleToWorld) {
+  function drawIsosurface(ctx, canvas, view) {
     const width = canvas.width;
     const height = canvas.height;
     if (!width || !height) return;
 
     const iso = parseFloat(thresholdInput.value) || 1;
-    const resolution = currentResolution();
+    const resolution = currentResolution(canvas);
+    const missingAxis = view === 'xy' ? 'z' : view === 'xz' ? 'y' : 'x';
+    const samples = currentSamples(6, 2);
+    const viewStateEntry = viewState[view];
+    const axisRange = axisBounds[missingAxis];
+    const slice = sliceRenderer.isSupported()
+      ? sliceRenderer.renderSlice(view, {
+          width,
+          height,
+          resolution,
+          offsetX: viewStateEntry.offsetX,
+          offsetY: viewStateEntry.offsetY,
+          zoom: viewStateEntry.zoom,
+          axisRange,
+          iso,
+          samples,
+          balls: editorState.balls
+        })
+      : null;
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, width, height);
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, width, height);
+    ctx.imageSmoothingEnabled = true;
+    if (slice) {
+      ctx.drawImage(slice, 0, 0, slice.width, slice.height, 0, 0, width, height);
+    } else {
+      drawIsosurfaceCpu(ctx, view, iso, resolution, samples, axisRange, width, height);
+    }
+    ctx.restore();
+  }
+
+  function drawIsosurfaceCpu(ctx, view, iso, resolution, samples, axisRange, width, height) {
     const stepX = width / resolution;
     const stepY = height / resolution;
-    const buffer = getIsoBuffer(view, resolution, resolution);
-    const imgData = buffer.imageData;
+    const imgData = ctx.createImageData(resolution, resolution);
     const data = imgData.data;
-    data.fill(0);
-    const missingAxis = view === 'xy' ? 'z' : view === 'xz' ? 'y' : 'x';
-    const { min: axisMin, max: axisMax } = axisBounds[missingAxis];
-    const samples = currentSamples(Math.max(5, Math.round(resolution * 0.25)), 1);
-
     for (let iy = 0; iy < resolution; iy++) {
       const sampleY = iy * stepY + stepY / 2;
       for (let ix = 0; ix < resolution; ix++) {
         const sampleX = ix * stepX + stepX / 2;
-        const coords = sampleToWorld(sampleX, sampleY);
+        let coords;
+        if (view === 'xy') coords = screenToWorldXY(sampleX, sampleY);
+        else if (view === 'xz') coords = screenToWorldXZ(sampleX, sampleY);
+        else coords = screenToWorldYZ(sampleX, sampleY);
+
         let exceedsPositive = false;
         let exceedsNegative = false;
         for (let si = 0; si < samples; si++) {
           const t = samples === 1 ? 0.5 : si / (samples - 1);
-          const axisValue = axisMin + t * (axisMax - axisMin);
+          const axisValue = axisRange.min + t * (axisRange.max - axisRange.min);
           let wx;
           let wy;
           let wz;
-
           if (view === 'xy') {
             wx = coords.x;
             wy = coords.y;
@@ -736,14 +933,24 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
             wy = coords.y;
             wz = coords.z;
           }
-
-          const components = fieldComponents(wx, wy, wz);
-          if (components.total >= iso) {
-            exceedsPositive = true;
+          let total = 0;
+          let neg = 0;
+          for (let bi = 0; bi < editorState.balls.length; bi++) {
+            const ball = editorState.balls[bi];
+            const dx = wx - ball.x;
+            const dy = wy - ball.y;
+            const dz = wz - ball.z;
+            const dist = Math.hypot(dx, dy, dz) || 1e-6;
+            const contrib = ball.r / dist;
+            if (ball.negative) {
+              neg += Math.abs(contrib);
+              total -= Math.abs(contrib);
+            } else {
+              total += Math.abs(contrib);
+            }
           }
-          if (components.negative >= iso) {
-            exceedsNegative = true;
-          }
+          if (total >= iso) exceedsPositive = true;
+          if (neg >= iso) exceedsNegative = true;
           if (exceedsPositive && exceedsNegative) break;
         }
 
@@ -755,7 +962,6 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
           data[idx + 2] = 180;
           data[idx + 3] = 200;
         }
-
         if (exceedsNegative) {
           data[idx] = Math.round((data[idx] + 230) / 2);
           data[idx + 1] = Math.round((data[idx + 1] + 110) / 2);
@@ -764,16 +970,11 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
         }
       }
     }
-
-    buffer.ctx.putImageData(imgData, 0, 0);
-    ctx.save();
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.clearRect(0, 0, width, height);
-    ctx.fillStyle = '#fff';
-    ctx.fillRect(0, 0, width, height);
-    ctx.imageSmoothingEnabled = false;
-    ctx.drawImage(buffer.canvas, 0, 0, width, height);
-    ctx.restore();
+    const temp = document.createElement('canvas');
+    temp.width = resolution;
+    temp.height = resolution;
+    temp.getContext('2d')?.putImageData(imgData, 0, 0);
+    ctx.drawImage(temp, 0, 0, resolution, resolution, 0, 0, width, height);
   }
 
   function getSceneCenter() {
@@ -822,12 +1023,12 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
       extent,
       bounds,
       iso,
-      fast: isFastMode()
+      fast: qualityFactor()
     });
   }
 
   function drawXY() {
-    drawIsosurface(xyCtx, xyCanvas, 'xy', (sampleX, sampleY) => screenToWorldXY(sampleX, sampleY));
+    drawIsosurface(xyCtx, xyCanvas, 'xy');
 
     const zoom = viewState.xy.zoom;
     editorState.balls.forEach((ball, index) => {
@@ -848,7 +1049,7 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
   }
 
   function drawXZ() {
-    drawIsosurface(xzCtx, xzCanvas, 'xz', (sampleX, sampleY) => screenToWorldXZ(sampleX, sampleY));
+    drawIsosurface(xzCtx, xzCanvas, 'xz');
 
     const zoom = viewState.xz.zoom;
     editorState.balls.forEach((ball, index) => {
@@ -869,7 +1070,7 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
   }
 
   function drawYZ() {
-    drawIsosurface(yzCtx, yzCanvas, 'yz', (sampleX, sampleY) => screenToWorldYZ(sampleX, sampleY));
+    drawIsosurface(yzCtx, yzCanvas, 'yz');
 
     const zoom = viewState.yz.zoom;
     editorState.balls.forEach((ball, index) => {
@@ -890,16 +1091,12 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
   }
 
   function renderInternal({ deferFullRedraw = false } = {}) {
-    refreshBallCache();
     axisBounds = computeAxisBounds();
     drawXY();
     drawXZ();
     drawYZ();
     drawPreview3D();
 
-    if (interactionState.fastMode && !deferFullRedraw) {
-      scheduleFullQualityRedraw();
-    }
     trackPerf();
   }
 
@@ -910,27 +1107,13 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
     const now = performance.now();
     const delta = now - perfMonitor.lastFrameTime;
     perfMonitor.lastFrameTime = now;
-    const slowThreshold = 28; // ~35 fps
-    const fastThreshold = 16; // ~60 fps
-
-    if (delta > slowThreshold) {
-      perfMonitor.slowFrames = Math.min(perfMonitor.slowFrames + 1, 20);
-      perfMonitor.fastFrames = Math.max(0, perfMonitor.fastFrames - 1);
-    } else if (delta < fastThreshold) {
-      perfMonitor.fastFrames = Math.min(perfMonitor.fastFrames + 1, 30);
-      perfMonitor.slowFrames = Math.max(0, perfMonitor.slowFrames - 1);
-    } else {
-      perfMonitor.slowFrames = Math.max(0, perfMonitor.slowFrames - 1);
-    }
-
-    if (!interactionState.autoFastMode && perfMonitor.slowFrames >= 4) {
-      interactionState.autoFastMode = true;
-      requestRender({ deferFullRedraw: true });
-    } else if (interactionState.autoFastMode && perfMonitor.fastFrames >= 12) {
-      interactionState.autoFastMode = false;
-      perfMonitor.slowFrames = 0;
-      requestRender({ deferFullRedraw: true });
-    }
+    if (!Number.isFinite(delta) || delta <= 0) return;
+    const alpha = 0.12;
+    perfMonitor.smoothedDelta = perfMonitor.smoothedDelta * (1 - alpha) + delta * alpha;
+    const target = 16.67;
+    const proposedScale = Math.max(0.5, Math.min(1, target / Math.max(8, perfMonitor.smoothedDelta)));
+    const blend = 0.18;
+    interactionState.qualityScale = interactionState.qualityScale * (1 - blend) + proposedScale * blend;
   }
 
   function flushPendingRender() {

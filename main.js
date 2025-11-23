@@ -261,6 +261,10 @@ function handlePointerDown(view, canvas, event) {
 }
 
 function handlePointerMove(event) {
+  if (dragState.active && event.buttons === 0) {
+    stopDragging();
+    return;
+  }
   if (handleCameraPanMove(event)) return;
   if (!dragState.active || editorState.selectedIndex < 0) return;
   const ball = editorState.balls[editorState.selectedIndex];
@@ -498,6 +502,14 @@ window.addEventListener('mousemove', event => {
   handlePointerMove(event);
 });
 window.addEventListener('mouseup', () => {
+  stopDragging();
+  stopCameraPan();
+});
+window.addEventListener('mouseleave', () => {
+  stopDragging();
+  stopCameraPan();
+});
+window.addEventListener('blur', () => {
   stopDragging();
   stopCameraPan();
 });
