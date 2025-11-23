@@ -292,7 +292,7 @@ function handlePointerMove(event) {
 
 function stopDragging() {
   if (dragState.active) {
-    renderer.endFastRender({ immediate: true });
+    renderer.endFastRender();
   }
   dragState.active = false;
   dragState.view = null;
@@ -318,7 +318,7 @@ function handleCameraPanMove(event) {
 
 function stopCameraPan() {
   if (cameraPanState.active) {
-    renderer.endFastRender({ immediate: true });
+    renderer.endFastRender();
   }
   cameraPanState.active = false;
 }

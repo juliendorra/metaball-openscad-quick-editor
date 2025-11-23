@@ -1023,9 +1023,12 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
     clearFullQualityTimer();
     interactionState.fullQualityTimer = setTimeout(() => {
       interactionState.fullQualityTimer = null;
-      interactionState.qualityScale = Math.min(1, interactionState.qualityScale + 0.1);
+      interactionState.qualityScale = Math.min(1, interactionState.qualityScale + 0.18);
       flushPendingRender();
       renderInternal({ deferFullRedraw: true });
+      if (interactionState.qualityScale < 0.95) {
+        scheduleFullQualityRedraw();
+      }
     }, 120);
   }
 
@@ -1037,8 +1040,9 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
   function endFastRender({ immediate = false } = {}) {
     if (immediate) {
       clearFullQualityTimer();
+      interactionState.qualityScale = Math.min(1, Math.max(interactionState.qualityScale, 0.7));
       flushPendingRender();
-      renderInternal({ deferFullRedraw: true });
+      scheduleFullQualityRedraw();
     } else {
       scheduleFullQualityRedraw();
     }
@@ -1053,7 +1057,7 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
     const resolution = currentResolution(canvas);
     const quality = qualityFactor();
     const isHighQuality = quality > 0.9;
-    const oversample = isHighQuality ? 1.6 : 1;
+    const oversample = isHighQuality ? 1.4 : 1.05;
     const renderResolution = Math.max(10, Math.round(resolution * oversample));
     const missingAxis = view === 'xy' ? 'z' : view === 'xz' ? 'y' : 'x';
     const viewStateEntry = viewState[view];
@@ -1297,6 +1301,9 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
     const delta = now - perfMonitor.lastFrameTime;
     perfMonitor.lastFrameTime = now;
     if (!Number.isFinite(delta) || delta <= 0) return;
+    if (delta > 80) {
+      return;
+    }
     const alpha = 0.12;
     perfMonitor.smoothedDelta = perfMonitor.smoothedDelta * (1 - alpha) + delta * alpha;
     const target = 16.67;
