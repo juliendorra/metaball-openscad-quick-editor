@@ -395,12 +395,17 @@ out vec4 fragColor;
 uniform sampler2D uScene;
 uniform vec2 uInvResolution;
 
+vec3 sampleColorWhiteBG(sampler2D tex, vec2 uv) {
+  vec4 s = texture(tex, uv);
+  return mix(vec3(1.0), s.rgb, s.a);
+}
+
 vec3 fxaa(sampler2D tex, vec2 uv, vec2 invRes) {
-  vec3 rgbNW = texture(tex, uv + vec2(-1.0, -1.0) * invRes).rgb;
-  vec3 rgbNE = texture(tex, uv + vec2(1.0, -1.0) * invRes).rgb;
-  vec3 rgbSW = texture(tex, uv + vec2(-1.0, 1.0) * invRes).rgb;
-  vec3 rgbSE = texture(tex, uv + vec2(1.0, 1.0) * invRes).rgb;
-  vec3 rgbM  = texture(tex, uv).rgb;
+  vec3 rgbNW = sampleColorWhiteBG(tex, uv + vec2(-1.0, -1.0) * invRes);
+  vec3 rgbNE = sampleColorWhiteBG(tex, uv + vec2(1.0, -1.0) * invRes);
+  vec3 rgbSW = sampleColorWhiteBG(tex, uv + vec2(-1.0, 1.0) * invRes);
+  vec3 rgbSE = sampleColorWhiteBG(tex, uv + vec2(1.0, 1.0) * invRes);
+  vec3 rgbM  = sampleColorWhiteBG(tex, uv);
 
   vec3 luma = vec3(0.299, 0.587, 0.114);
   float lumaNW = dot(rgbNW, luma);
@@ -437,6 +442,7 @@ vec3 fxaa(sampler2D tex, vec2 uv, vec2 invRes) {
 void main() {
   float alpha = texture(uScene, vUv).a;
   vec3 color = fxaa(uScene, vUv, uInvResolution);
+  color = mix(vec3(1.0), color, alpha);
   fragColor = vec4(color, alpha);
 }
 `;
@@ -652,7 +658,7 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
       gl.disable(gl.DEPTH_TEST);
       gl.disable(gl.CULL_FACE);
       gl.colorMask(true, true, true, true);
-      gl.clearColor(0, 0, 0, 0);
+      gl.clearColor(1, 1, 1, 0);
       gl.clear(gl.COLOR_BUFFER_BIT);
       gl.drawArrays(gl.TRIANGLES, 0, 6);
 
