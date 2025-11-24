@@ -225,6 +225,7 @@ function pointerPosition(canvas, event) {
 function handlePointerDown(view, canvas, event) {
   const { px, py } = pointerPosition(canvas, event);
   const hitIndex = renderer.hitTest(view, px, py);
+  renderer.beginFastRender();
   setSelectedIndex(hitIndex);
   updateBallList();
   renderer.drawAll();
@@ -433,6 +434,7 @@ function handleViewContextMenu(event) {
   if (!(target instanceof HTMLCanvasElement)) return;
   if (previewCanvas && previewCanvas.contains(target)) return;
   event.preventDefault();
+  renderer.beginFastRender();
 
   let view = null;
   if (target === xyCanvas) view = 'xy';

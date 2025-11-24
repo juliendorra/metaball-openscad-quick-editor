@@ -329,15 +329,12 @@ FieldSample sampleField(vec3 p) {
   return f;
 }
 
-vec2 screenToWorld(vec2 fragCoord) {
-  float x = (fragCoord.x - 0.5 * uCanvasSize.x) / uZoom - uOffset.x;
-  float y = (0.5 * uCanvasSize.y - fragCoord.y) / uZoom - uOffset.y;
-  return vec2(x, y);
-}
-
 void main() {
-  vec2 fragCoord = vec2(vUv.x * uCanvasSize.x, vUv.y * uCanvasSize.y);
-  vec2 plane = screenToWorld(fragCoord);
+  vec2 fragCoord = vec2(vUv.x * uCanvasSize.x, (1.0 - vUv.y) * uCanvasSize.y);
+  float halfW = 0.5 * uCanvasSize.x;
+  float halfH = 0.5 * uCanvasSize.y;
+  float sx = (fragCoord.x - halfW) / uZoom;
+  float sy = (halfH - fragCoord.y) / uZoom;
 
   bool exceedsPositive = false;
   bool exceedsNegative = false;
@@ -348,18 +345,24 @@ void main() {
     float axisValue = mix(uAxisRange.x, uAxisRange.y, t);
     vec3 p;
     if (uViewMode == 0) { // xy
-      p = vec3(plane.x, plane.y, axisValue);
+      float wx = sx - uOffset.x;
+      float wy = sy - uOffset.y;
+      p = vec3(wx, wy, axisValue);
     } else if (uViewMode == 1) { // xz
-      p = vec3(plane.x, axisValue, plane.y);
+      float wx = sx - uOffset.x;
+      float wz = sy - uOffset.y;
+      p = vec3(wx, axisValue, wz);
     } else { // yz
-      p = vec3(axisValue, plane.y, plane.x);
+      float wz = sx - uOffset.x;
+      float wy = sy - uOffset.y;
+      p = vec3(axisValue, wy, wz);
     }
 
-    FieldSample sample = sampleField(p);
-    if (sample.total >= uIso) {
+    FieldSample fs = sampleField(p);
+    if (fs.total >= uIso) {
       exceedsPositive = true;
     }
-    if (sample.negative >= uIso) {
+    if (fs.negative >= uIso) {
       exceedsNegative = true;
     }
     if (exceedsPositive && exceedsNegative) break;
@@ -432,7 +435,9 @@ vec3 fxaa(sampler2D tex, vec2 uv, vec2 invRes) {
 }
 
 void main() {
-  fragColor = vec4(fxaa(uScene, vUv, uInvResolution), 1.0);
+  float alpha = texture(uScene, vUv).a;
+  vec3 color = fxaa(uScene, vUv, uInvResolution);
+  fragColor = vec4(color, alpha);
 }
 `;
 
@@ -497,7 +502,7 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
         axisRange: gl.getUniformLocation(program, 'uAxisRange'),
         iso: gl.getUniformLocation(program, 'uIso'),
         ballCount: gl.getUniformLocation(program, 'uBallCount'),
-        ballData: gl.getUniformLocation(program, 'uBallData'),
+        ballData: gl.getUniformLocation(program, 'uBallData[0]'),
         samples: gl.getUniformLocation(program, 'uSamples'),
         viewMode: gl.getUniformLocation(program, 'uViewMode'),
         colorPositive: gl.getUniformLocation(program, 'uColorPositive'),
@@ -564,6 +569,7 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
       const resources = glResources[view];
       if (!gl || !resources || !resources.program || gl.isContextLost()) {
         supported = false;
+        console.warn(`[slice renderer] WebGL unavailable for view ${view}: context or program missing`);
         return null;
       }
       const canvas = glCanvases[view];
@@ -580,17 +586,39 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
         balls
       } = options;
 
-      canvas.width = Math.max(1, resolution);
-      canvas.height = Math.max(1, resolution);
+      const aspect = Math.max(0.0001, width / Math.max(1, height));
+      if (aspect >= 1) {
+        canvas.width = Math.max(1, resolution);
+        canvas.height = Math.max(1, Math.round(resolution / aspect));
+      } else {
+        canvas.height = Math.max(1, resolution);
+        canvas.width = Math.max(1, Math.round(resolution * aspect));
+      }
       gl.viewport(0, 0, canvas.width, canvas.height);
 
       const { program, fxaaProgram, attribBuf, uniforms, fxaaUniforms } = resources;
+      if (!program) {
+        supported = false;
+        console.warn(`[slice renderer] Program missing for view ${view}`);
+        return null;
+      }
 
       ensureRenderTarget(gl, resources, canvas.width, canvas.height);
       gl.bindFramebuffer(gl.FRAMEBUFFER, resources.fbo);
+      const fbStatus = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+      if (fbStatus !== gl.FRAMEBUFFER_COMPLETE) {
+        supported = false;
+        console.warn(`[slice renderer] Framebuffer incomplete for view ${view}: status ${fbStatus.toString(16)}`);
+        return null;
+      }
 
       gl.useProgram(program);
       gl.bindBuffer(gl.ARRAY_BUFFER, attribBuf);
+      if (uniforms.position < 0) {
+        supported = false;
+        console.warn(`[slice renderer] position attribute missing for view ${view}`);
+        return null;
+      }
       gl.enableVertexAttribArray(uniforms.position);
       gl.vertexAttribPointer(uniforms.position, 2, gl.FLOAT, false, 0, 0);
 
@@ -599,7 +627,7 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
       gl.uniform1f(uniforms.zoom, zoom);
       gl.uniform2f(uniforms.axisRange, axisRange.min, axisRange.max);
       gl.uniform1f(uniforms.iso, iso);
-      gl.uniform1i(uniforms.samples, Math.min(samples, SLICE_SHADER_MAX_SAMPLES));
+      gl.uniform1i(uniforms.samples, Math.min(Math.max(1, samples), SLICE_SHADER_MAX_SAMPLES));
       gl.uniform1i(uniforms.viewMode, view === 'xy' ? 0 : view === 'xz' ? 1 : 2);
 
       const count = Math.min(balls.length, SLICE_SHADER_BALL_LIMIT);
@@ -612,8 +640,12 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
         ballData[i * 4 + 2] = Number(b.z) || 0;
         ballData[i * 4 + 3] = b.negative ? -radius : radius;
       }
-      gl.uniform1i(uniforms.ballCount, count);
-      gl.uniform4fv(uniforms.ballData, ballData);
+      if (!uniforms.ballData) {
+        console.warn(`[slice renderer] ballData uniform missing for view ${view}`);
+      } else {
+        gl.uniform1i(uniforms.ballCount, count);
+        gl.uniform4fv(uniforms.ballData, ballData);
+      }
       gl.uniform3f(uniforms.colorPositive, 70 / 255, 130 / 255, 180 / 255);
       gl.uniform3f(uniforms.colorNegative, 230 / 255, 110 / 255, 30 / 255);
 
@@ -629,21 +661,38 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
       if (fxaaProgram && fxaaUniforms) {
         gl.useProgram(fxaaProgram);
         gl.bindBuffer(gl.ARRAY_BUFFER, attribBuf);
-        gl.enableVertexAttribArray(fxaaUniforms.position);
-        gl.vertexAttribPointer(fxaaUniforms.position, 2, gl.FLOAT, false, 0, 0);
+        if (fxaaUniforms.position < 0) {
+          console.warn(`[slice renderer] fxaa position attribute missing for view ${view}`);
+        } else {
+          gl.enableVertexAttribArray(fxaaUniforms.position);
+          gl.vertexAttribPointer(fxaaUniforms.position, 2, gl.FLOAT, false, 0, 0);
+        }
         gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D, resources.colorTex);
-        gl.uniform1i(fxaaUniforms.scene, 0);
-        gl.uniform2f(fxaaUniforms.invResolution, 1 / canvas.width, 1 / canvas.height);
+        if (fxaaUniforms.scene) gl.uniform1i(fxaaUniforms.scene, 0);
+        if (fxaaUniforms.invResolution) gl.uniform2f(fxaaUniforms.invResolution, 1 / canvas.width, 1 / canvas.height);
         gl.drawArrays(gl.TRIANGLES, 0, 6);
+      }
+      const err = gl.getError();
+      if (err !== gl.NO_ERROR) {
+        console.warn(`[slice renderer] gl error for view ${view}: ${err.toString(16)}`);
+      } else if (!renderSlice.diagnosticsLogged?.[view]) {
+        const pixel = new Uint8Array(4);
+        gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixel);
+        console.log(`[slice renderer] first pixel view ${view} rgba=`, pixel);
+        renderSlice.diagnosticsLogged = renderSlice.diagnosticsLogged || {};
+        renderSlice.diagnosticsLogged[view] = true;
       }
       return canvas;
     }
 
-    return {
+    const api = {
       renderSlice,
-      isSupported: () => supported
+      isSupported: () => supported,
+      _loggedMissing: false,
+      _loggedNull: false
     };
+    return api;
   }
 
 
@@ -961,7 +1010,8 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
   let axisBounds = computeAxisBounds();
   const interactionState = {
     qualityScale: 1,
-    fullQualityTimer: null
+    fullQualityTimer: null,
+    inputVersion: 0
   };
 
   const perfMonitor = {
@@ -1021,26 +1071,30 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
 
   function scheduleFullQualityRedraw() {
     clearFullQualityTimer();
+    const version = interactionState.inputVersion;
     interactionState.fullQualityTimer = setTimeout(() => {
+      if (version !== interactionState.inputVersion) return;
       interactionState.fullQualityTimer = null;
-      interactionState.qualityScale = Math.min(1, interactionState.qualityScale + 0.18);
+      interactionState.qualityScale = Math.min(1, interactionState.qualityScale + 0.25);
       flushPendingRender();
-      renderInternal({ deferFullRedraw: true });
+      startRenderQueue({ deferFullRedraw: true });
       if (interactionState.qualityScale < 0.95) {
         scheduleFullQualityRedraw();
       }
-    }, 120);
+    }, 80);
   }
 
   function beginFastRender() {
+    interactionState.inputVersion += 1;
     clearFullQualityTimer();
+    flushPendingRender();
     interactionState.qualityScale = Math.min(interactionState.qualityScale, 0.4);
   }
 
   function endFastRender({ immediate = false } = {}) {
     if (immediate) {
       clearFullQualityTimer();
-      interactionState.qualityScale = Math.min(1, Math.max(interactionState.qualityScale, 0.7));
+      interactionState.qualityScale = Math.min(1, Math.max(interactionState.qualityScale, 0.85));
       flushPendingRender();
       scheduleFullQualityRedraw();
     } else {
@@ -1048,7 +1102,8 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
     }
   }
 
-  function drawIsosurface(ctx, canvas, view) {
+  function drawIsosurface(ctx, canvas, view, renderVersion = interactionState.inputVersion, opts = {}) {
+    if (renderVersion !== interactionState.inputVersion) return;
     const width = canvas.width;
     const height = canvas.height;
     if (!width || !height) return;
@@ -1063,7 +1118,7 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
     const viewStateEntry = viewState[view];
     const axisRange = axisBounds[missingAxis];
     const samples = computeSliceSamples(axisRange);
-    const slice = sliceRenderer.isSupported()
+    const slice = renderVersion === interactionState.inputVersion
       ? sliceRenderer.renderSlice(view, {
           width,
           height,
@@ -1073,10 +1128,13 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
           zoom: viewStateEntry.zoom,
           axisRange,
           iso,
-        samples,
-        balls: editorState.balls
-      })
+          samples,
+          balls: editorState.balls,
+          version: renderVersion,
+          skipRequest: Boolean(opts.skipSliceRequest)
+        })
       : null;
+    if (renderVersion !== interactionState.inputVersion) return;
     ctx.save();
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, width, height);
@@ -1084,90 +1142,22 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
     ctx.fillRect(0, 0, width, height);
     ctx.imageSmoothingEnabled = isHighQuality;
     if (slice) {
-      ctx.drawImage(slice, 0, 0, slice.width, slice.height, 0, 0, width, height);
+      const sWidth = slice.width || renderResolution;
+      const sHeight = slice.height || renderResolution;
+      const img = slice.bitmap || slice;
+      ctx.drawImage(img, 0, 0, sWidth, sHeight, 0, 0, width, height);
+    } else if (!sliceRenderer.isSupported()) {
+      if (!sliceRenderer._loggedMissing) {
+        console.warn(`[slice renderer] renderSlice returned null for ${view} (unsupported)`);
+        sliceRenderer._loggedMissing = true;
+      }
     } else {
-      drawIsosurfaceCpu(ctx, view, iso, renderResolution, samples, axisRange, width, height);
-    }
-    ctx.restore();
-  }
-
-  function drawIsosurfaceCpu(ctx, view, iso, resolution, samples, axisRange, width, height) {
-    const stepX = width / resolution;
-    const stepY = height / resolution;
-    const imgData = ctx.createImageData(resolution, resolution);
-    const data = imgData.data;
-    for (let iy = 0; iy < resolution; iy++) {
-      const sampleY = iy * stepY + stepY / 2;
-      for (let ix = 0; ix < resolution; ix++) {
-        const sampleX = ix * stepX + stepX / 2;
-        let coords;
-        if (view === 'xy') coords = screenToWorldXY(sampleX, sampleY);
-        else if (view === 'xz') coords = screenToWorldXZ(sampleX, sampleY);
-        else coords = screenToWorldYZ(sampleX, sampleY);
-
-        let exceedsPositive = false;
-        let exceedsNegative = false;
-        for (let si = 0; si < samples; si++) {
-          const t = samples === 1 ? 0.5 : si / (samples - 1);
-          const axisValue = axisRange.min + t * (axisRange.max - axisRange.min);
-          let wx;
-          let wy;
-          let wz;
-          if (view === 'xy') {
-            wx = coords.x;
-            wy = coords.y;
-            wz = axisValue;
-          } else if (view === 'xz') {
-            wx = coords.x;
-            wy = axisValue;
-            wz = coords.z;
-          } else {
-            wx = axisValue;
-            wy = coords.y;
-            wz = coords.z;
-          }
-          let total = 0;
-          let neg = 0;
-          for (let bi = 0; bi < editorState.balls.length; bi++) {
-            const ball = editorState.balls[bi];
-            const dx = wx - ball.x;
-            const dy = wy - ball.y;
-            const dz = wz - ball.z;
-            const dist = Math.hypot(dx, dy, dz) || 1e-6;
-            const contrib = ball.r / dist;
-            if (ball.negative) {
-              neg += Math.abs(contrib);
-              total -= Math.abs(contrib);
-            } else {
-              total += Math.abs(contrib);
-            }
-          }
-          if (total >= iso) exceedsPositive = true;
-          if (neg >= iso) exceedsNegative = true;
-          if (exceedsPositive && exceedsNegative) break;
-        }
-
-        if (!exceedsPositive && !exceedsNegative) continue;
-        const idx = (iy * resolution + ix) * 4;
-        if (exceedsPositive) {
-          data[idx] = 70;
-          data[idx + 1] = 130;
-          data[idx + 2] = 180;
-          data[idx + 3] = 200;
-        }
-        if (exceedsNegative) {
-          data[idx] = Math.round((data[idx] + 230) / 2);
-          data[idx + 1] = Math.round((data[idx + 1] + 110) / 2);
-          data[idx + 2] = Math.round((data[idx + 2] + 30) / 2);
-          data[idx + 3] = Math.min(255, Math.round((data[idx + 3] + 200) / 2));
-        }
+      if (!sliceRenderer._loggedNull) {
+        console.warn(`[slice renderer] renderSlice returned null for ${view} (supported=true)`);
+        sliceRenderer._loggedNull = true;
       }
     }
-    const temp = document.createElement('canvas');
-    temp.width = resolution;
-    temp.height = resolution;
-    temp.getContext('2d')?.putImageData(imgData, 0, 0);
-    ctx.drawImage(temp, 0, 0, resolution, resolution, 0, 0, width, height);
+    ctx.restore();
   }
 
   function getSceneCenter() {
@@ -1204,7 +1194,8 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
     };
   }
 
-  function drawPreview3D() {
+  function drawPreview3D(renderVersion = interactionState.inputVersion) {
+    if (renderVersion !== interactionState.inputVersion) return;
     if (!previewViewport) return;
     const extent = getSceneExtent();
     const center = getSceneCenter();
@@ -1220,11 +1211,13 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
     });
   }
 
-  function drawXY() {
-    drawIsosurface(xyCtx, xyCanvas, 'xy');
+  function drawXY(renderVersion, opts = {}) {
+    if (renderVersion !== interactionState.inputVersion) return;
+    drawIsosurface(xyCtx, xyCanvas, 'xy', renderVersion, opts);
 
     const zoom = viewState.xy.zoom;
     editorState.balls.forEach((ball, index) => {
+      if (renderVersion !== interactionState.inputVersion) return;
       const { px, py } = worldToScreenXY(ball.x, ball.y);
       const radiusPx = Math.max(1, ball.r * zoom);
       const baseColor = ball.negative ? '#d45500' : '#000000';
@@ -1241,11 +1234,13 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
     });
   }
 
-  function drawXZ() {
-    drawIsosurface(xzCtx, xzCanvas, 'xz');
+  function drawXZ(renderVersion, opts = {}) {
+    if (renderVersion !== interactionState.inputVersion) return;
+    drawIsosurface(xzCtx, xzCanvas, 'xz', renderVersion, opts);
 
     const zoom = viewState.xz.zoom;
     editorState.balls.forEach((ball, index) => {
+      if (renderVersion !== interactionState.inputVersion) return;
       const { px, py } = worldToScreenXZ(ball.x, ball.z);
       const radiusPx = Math.max(1, ball.r * zoom);
       const baseColor = ball.negative ? '#d45500' : '#000000';
@@ -1262,11 +1257,13 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
     });
   }
 
-  function drawYZ() {
-    drawIsosurface(yzCtx, yzCanvas, 'yz');
+  function drawYZ(renderVersion, opts = {}) {
+    if (renderVersion !== interactionState.inputVersion) return;
+    drawIsosurface(yzCtx, yzCanvas, 'yz', renderVersion, opts);
 
     const zoom = viewState.yz.zoom;
     editorState.balls.forEach((ball, index) => {
+      if (renderVersion !== interactionState.inputVersion) return;
       const { px, py } = worldToScreenYZ(ball.y, ball.z);
       const radiusPx = Math.max(1, ball.r * zoom);
       const baseColor = ball.negative ? '#d45500' : '#000000';
@@ -1283,14 +1280,57 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
     });
   }
 
-  function renderInternal({ deferFullRedraw = false } = {}) {
-    axisBounds = computeAxisBounds();
-    drawXY();
-    drawXZ();
-    drawYZ();
-    drawPreview3D();
+  let renderQueue = null;
 
-    trackPerf();
+  function startRenderQueue(options = {}) {
+    const version = interactionState.inputVersion;
+    renderQueue = {
+      version,
+      options,
+      views: ['xy', 'xz', 'yz', 'preview'],
+      boundsReady: false
+    };
+    scheduleRenderStep();
+  }
+
+  function scheduleRenderStep() {
+    if (pendingRender !== null) return;
+    pendingRender = requestAnimationFrame(() => {
+      pendingRender = null;
+      processRenderStep();
+    });
+  }
+
+  function processRenderStep() {
+    const rq = renderQueue;
+    if (!rq) return;
+    if (rq.version !== interactionState.inputVersion) {
+      renderQueue = null;
+      return;
+    }
+    const startTime = performance.now();
+    const budgetMs = 14;
+    if (!rq.boundsReady) {
+      axisBounds = computeAxisBounds();
+      rq.boundsReady = true;
+    }
+    while (rq.views.length && performance.now() - startTime < budgetMs) {
+      const view = rq.views.shift();
+      if (rq.version !== interactionState.inputVersion) {
+        renderQueue = null;
+        return;
+      }
+      if (view === 'xy') drawXY(rq.version, rq.options);
+      else if (view === 'xz') drawXZ(rq.version, rq.options);
+      else if (view === 'yz') drawYZ(rq.version, rq.options);
+      else if (view === 'preview') drawPreview3D(rq.version);
+    }
+    if (!rq.views.length) {
+      renderQueue = null;
+      trackPerf();
+    } else {
+      scheduleRenderStep();
+    }
   }
 
   let pendingRender = null;
@@ -1321,17 +1361,18 @@ export function createRenderer({ xyCanvas, xzCanvas, yzCanvas, previewCanvas, th
       pendingRender = null;
     }
     pendingRenderOptions = null;
+    renderQueue = null;
   }
 
   function requestRender(options = {}) {
+    const skipSlice = Boolean(options.skipSliceRequest);
+    if (!skipSlice) {
+      interactionState.inputVersion += 1;
+      clearFullQualityTimer();
+    }
     pendingRenderOptions = options;
-    if (pendingRender !== null) return;
-    pendingRender = requestAnimationFrame(() => {
-      const opts = pendingRenderOptions || {};
-      pendingRenderOptions = null;
-      pendingRender = null;
-      renderInternal(opts);
-    });
+    renderQueue = null;
+    startRenderQueue(options);
   }
 
   function hitTest(view, px, py) {
